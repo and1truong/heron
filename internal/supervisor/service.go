@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,37 +21,41 @@ import (
 var ErrClosing = errors.New("supervisor is shutting down")
 
 type Service struct {
-	id             string
-	cfg            config.RuntimeAppConfig
-	runner         proc.ProcessRunner
-	logger         *slog.Logger
-	lifecycle      context.Context
-	mu             sync.Mutex
-	state          State
-	process        *proc.Process
-	activeRequests int
-	idleTimer      *time.Timer
-	startDone      chan struct{}
-	startErr       error
-	stopDone       chan struct{}
-	stopErr        error
-	generation     uint64
-	startCancel    context.CancelFunc
-	workerDone     chan struct{}
-	startedAt      time.Time
-	starts         int
-	manualStopped  bool
+	dependencies       []*Service
+	dependents         map[string]int
+	dependencyReleases []func()
+	id                 string
+	cfg                config.RuntimeAppConfig
+	runner             proc.ProcessRunner
+	logger             *slog.Logger
+	lifecycle          context.Context
+	mu                 sync.Mutex
+	state              State
+	process            *proc.Process
+	activeRequests     int
+	idleTimer          *time.Timer
+	startDone          chan struct{}
+	startErr           error
+	stopDone           chan struct{}
+	stopErr            error
+	generation         uint64
+	startCancel        context.CancelFunc
+	workerDone         chan struct{}
+	startedAt          time.Time
+	starts             int
+	manualStopped      bool
 }
 
 func newService(ctx context.Context, c config.RuntimeAppConfig, r proc.ProcessRunner, l *slog.Logger) *Service {
-	return &Service{id: c.ID, cfg: c, runner: r, logger: l.With("service", c.ID), lifecycle: ctx, state: StateStopped}
+	return &Service{id: c.ID, cfg: c, runner: r, logger: l.With("service", c.ID), lifecycle: ctx, state: StateStopped, dependents: map[string]int{}}
 }
 func (s *Service) Config() config.RuntimeAppConfig { return s.cfg }
 func (s *Service) State() State                    { s.mu.Lock(); defer s.mu.Unlock(); return s.state }
 func (s *Service) commandSpec(command, kind string) proc.CommandSpec {
 	return proc.CommandSpec{Command: command, Dir: s.cfg.Pwd, Service: s.id, Kind: kind, Env: s.cfg.Env}
 }
-func (s *Service) Acquire(ctx context.Context) (func(), error) {
+func (s *Service) Acquire(ctx context.Context) (func(), error) { return s.acquire(ctx, "") }
+func (s *Service) acquire(ctx context.Context, dependent string) (func(), error) {
 	for {
 		s.mu.Lock()
 		if s.lifecycle.Err() != nil || s.manualStopped {
@@ -63,11 +69,28 @@ func (s *Service) Acquire(ctx context.Context) (func(), error) {
 				s.idleTimer.Stop()
 				s.idleTimer = nil
 			}
-			s.activeRequests++
+			if dependent == "" {
+				s.activeRequests++
+			} else {
+				s.dependents[dependent]++
+			}
 			s.mu.Unlock()
 			var once sync.Once
-			return func() { once.Do(s.release) }, nil
+			return func() {
+				once.Do(func() {
+					if dependent == "" {
+						s.release()
+					} else {
+						s.releaseDependent(dependent)
+					}
+				})
+			}, nil
 		case StateStopped, StateFailed:
+			if len(s.dependencyReleases) != 0 {
+				err := s.startErr
+				s.mu.Unlock()
+				return nil, fmt.Errorf("previous stop incomplete; retry stop before starting: %w", err)
+			}
 			s.state = StateBuilding
 			s.startDone = make(chan struct{})
 			s.startErr = nil
@@ -114,6 +137,28 @@ func (s *Service) start(attemptCtx context.Context, attempt, workerDone chan str
 	defer close(workerDone)
 	ctx, cancel := context.WithTimeout(attemptCtx, s.cfg.StartTimeout)
 	defer cancel()
+	// Keep leases until the process has stopped, independently of request releases.
+	var releases []func()
+	committed := false
+	defer func() {
+		if !committed {
+			for i := len(releases) - 1; i >= 0; i-- {
+				releases[i]()
+			}
+		}
+	}()
+	for _, dependency := range s.dependencies {
+		release, err := dependency.acquire(ctx, s.id)
+		if err != nil {
+			s.fail(attempt, fmt.Errorf("dependency %q: %w", dependency.id, err))
+			return
+		}
+		releases = append(releases, release)
+	}
+	if err := ctx.Err(); err != nil {
+		s.fail(attempt, err)
+		return
+	}
 	if s.cfg.Build != "" {
 		s.logger.Info("building")
 		if e := s.runner.Run(ctx, s.commandSpec(s.cfg.Build, "build")); e != nil {
@@ -157,6 +202,8 @@ func (s *Service) start(attemptCtx context.Context, attempt, workerDone chan str
 		s.mu.Unlock()
 		return
 	}
+	s.dependencyReleases = releases
+	committed = true
 	s.state = StateRunning
 	s.startedAt = time.Now()
 	s.starts++
@@ -285,6 +332,7 @@ func (s *Service) watch(p *proc.Process) {
 		}
 		s.idleTimer = nil
 		s.process = nil
+		s.releaseDependenciesLocked()
 		s.state = StateFailed
 		if s.startCancel != nil {
 			s.startCancel()
@@ -317,7 +365,7 @@ func (s *Service) scheduleIdleLocked() {
 		s.idleTimer.Stop()
 		s.idleTimer = nil
 	}
-	if s.cfg.Idle == 0 {
+	if s.cfg.Idle == 0 || s.activeRequests != 0 || len(s.dependents) != 0 {
 		return
 	}
 	g := s.generation
@@ -325,7 +373,7 @@ func (s *Service) scheduleIdleLocked() {
 }
 func (s *Service) idle(g uint64) {
 	s.mu.Lock()
-	if g != s.generation || s.state != StateRunning || s.activeRequests != 0 {
+	if g != s.generation || s.state != StateRunning || s.activeRequests != 0 || len(s.dependents) != 0 {
 		s.mu.Unlock()
 		return
 	}
@@ -357,6 +405,10 @@ func (s *Service) beginStopLocked() {
 }
 func (s *Service) Stop(ctx context.Context) error {
 	s.mu.Lock()
+	if err := s.dependencyStopErrorLocked(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	switch s.state {
 	case StateStopped:
 		s.mu.Unlock()
@@ -415,6 +467,9 @@ func (s *Service) stop() {
 		}
 	}
 	s.mu.Lock()
+	if e == nil {
+		s.releaseDependenciesLocked()
+	}
 	s.process = nil
 	s.state = StateStopped
 	if e != nil {
@@ -434,4 +489,37 @@ func (s *Service) stop() {
 	if e == nil {
 		s.logger.Info("stopped")
 	}
+}
+
+// Locking follows dependency edges only; configuration rejects cycles.
+func (s *Service) releaseDependenciesLocked() {
+	for i := len(s.dependencyReleases) - 1; i >= 0; i-- {
+		s.dependencyReleases[i]()
+	}
+	s.dependencyReleases = nil
+}
+func (s *Service) releaseDependent(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dependents[id]--
+	if s.dependents[id] <= 0 {
+		delete(s.dependents, id)
+	}
+	if s.state == StateRunning {
+		s.scheduleIdleLocked()
+	}
+}
+func (s *Service) dependentIDsLocked() []string {
+	ids := make([]string, 0, len(s.dependents))
+	for id := range s.dependents {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+func (s *Service) dependencyStopErrorLocked() error {
+	if len(s.dependents) == 0 {
+		return nil
+	}
+	return fmt.Errorf("cannot stop %q: active dependents: %s; stop dependents first", s.id, strings.Join(s.dependentIDsLocked(), ", "))
 }

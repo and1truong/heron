@@ -8,12 +8,14 @@ import (
 )
 
 type Snapshot struct {
-	ID            string
-	State         State
-	PID           int
-	StartedAt     time.Time
-	Restarts      int
-	ManualStopped bool
+	DependsOn        []string
+	ActiveDependents []string
+	ID               string
+	State            State
+	PID              int
+	StartedAt        time.Time
+	Restarts         int
+	ManualStopped    bool
 }
 
 func (s State) String() string {
@@ -39,7 +41,7 @@ func (s *Supervisor) Snapshots() []Snapshot {
 	result := make([]Snapshot, 0, len(s.services))
 	for id, v := range s.services {
 		v.mu.Lock()
-		x := Snapshot{ID: id, State: v.state, StartedAt: v.startedAt, Restarts: max(0, v.starts-1), ManualStopped: v.manualStopped}
+		x := Snapshot{DependsOn: append([]string(nil), v.cfg.DependsOn...), ActiveDependents: v.dependentIDsLocked(), ID: id, State: v.state, StartedAt: v.startedAt, Restarts: max(0, v.starts-1), ManualStopped: v.manualStopped}
 		if p := v.process; p != nil && p.Cmd != nil && p.Cmd.Process != nil {
 			select {
 			case <-p.Done:
@@ -67,6 +69,10 @@ func (s *Supervisor) Action(ctx context.Context, id, action string) error {
 	switch action {
 	case "stop", "kill", "restart":
 		v.mu.Lock()
+		if err := v.dependencyStopErrorLocked(); err != nil {
+			v.mu.Unlock()
+			return err
+		}
 		var killErr error
 		if action == "kill" {
 			if v.cfg.Stop != "" {
