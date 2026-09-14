@@ -217,6 +217,9 @@ func runServerMode(path string, interactive bool) error {
 		observations = observe.New()
 		logger = slog.New(&observe.Handler{Store: observations, Level: level})
 	}
+	if e := preflightRequiredPorts(context.Background(), cfg, logger); e != nil {
+		return e
+	}
 	runner := proc.NewRunner(logger)
 	hooks := lifecycle.New(cfg.StartUp, cfg.TearDown, runner, logger)
 	sup := supervisor.New(cfg, runner, logger)
