@@ -25,7 +25,7 @@ apps:
     launch: sleep 120
     dependsOn: [api]
 """)
-    # Pick a free proxy port; the UI independently chooses an ephemeral port.
+    # Pick a free proxy port; the UI is served from this same listener.
     import socket
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -39,16 +39,20 @@ apps:
         selector.register(proc.stdout, selectors.EVENT_READ)
         assert selector.select(15), "UI did not publish its address"
         line = proc.stdout.readline().strip()
-        assert line.startswith("Heron UI: "), line
-        base = line.removeprefix("Heron UI: ")
+        base = f"http://ui.heron.localhost:{port}"
+        assert line == f"Heron UI: {base}", line
+        # Some CI images do not resolve reserved .localhost names. Connect to
+        # loopback directly while retaining the public Host header.
+        direct = f"http://127.0.0.1:{port}"
+        host = f"ui.heron.localhost:{port}"
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        html = opener.open(base, timeout=5).read().decode()
+        html = opener.open(urllib.request.Request(direct, headers={"Host": host}), timeout=5).read().decode()
         token = re.search(r'name="heron-token"\s+content="([^"]+)"', html).group(1)
 
         def api(endpoint, body=None):
-            req = urllib.request.Request(base + "/api/" + endpoint,
+            req = urllib.request.Request(direct + "/api/" + endpoint,
                 data=None if body is None else json.dumps(body).encode(),
-                headers={"X-Heron-Token": token, "Content-Type": "application/json"})
+                headers={"Host": host, "X-Heron-Token": token, "Content-Type": "application/json"})
             return json.load(opener.open(req, timeout=20))
 
         api("action", {"ID": "web", "Action": "start"})

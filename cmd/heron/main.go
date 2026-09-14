@@ -256,7 +256,25 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 	hooks := lifecycle.New(cfg.StartUp, cfg.TearDown, runner, logger)
 	tasks := scheduler.New(cfg.ScheduledTasks, runner, logger)
 	sup := supervisor.New(cfg, runner, logger)
-	drainer := appProxy.NewDrainHandler(appProxy.NewHandler(cfg, sup, logger))
+	proxyHandler := appProxy.NewHandler(cfg, sup, logger)
+	var ui *webui.Server
+	if graphical {
+		ui, e = webui.New(cfg, path, sup, observations)
+		if e != nil {
+			return fmt.Errorf("create graphical UI: %w", e)
+		}
+	}
+	rootHandler := http.Handler(proxyHandler)
+	if ui != nil {
+		rootHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if ui.HandlesHost(r.Host) {
+				ui.ServeHTTP(w, r)
+				return
+			}
+			proxyHandler.ServeHTTP(w, r)
+		})
+	}
+	drainer := appProxy.NewDrainHandler(rootHandler)
 	http2Server := &http2.Server{}
 	handler := h2c.NewHandler(drainer, http2Server)
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
@@ -303,18 +321,19 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 	}
 	uiCtx, cancelUI := context.WithCancel(signals)
 	defer cancelUI()
+	var stopWebUI func()
+	if ui != nil {
+		stopWebUI = ui.Start(uiCtx)
+		fmt.Fprintf(output, "Heron UI: %s\n", ui.URL())
+	}
 	var uiErrors chan error
 	var uiDone chan struct{}
-	if interactive || graphical {
+	if interactive {
 		uiErrors = make(chan error, 1)
 		uiDone = make(chan struct{})
 		go func() {
 			defer close(uiDone)
-			if graphical {
-				uiErrors <- webui.Run(uiCtx, cfg, path, sup, observations, output)
-			} else {
-				uiErrors <- tui.Run(uiCtx, sup, observations)
-			}
+			uiErrors <- tui.Run(uiCtx, sup, observations)
 		}()
 	}
 	var startErrors chan error
@@ -343,6 +362,9 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 	case <-signals.Done():
 	}
 	cancelUI()
+	if stopWebUI != nil {
+		stopWebUI()
+	}
 	if uiDone != nil {
 		<-uiDone
 	}
