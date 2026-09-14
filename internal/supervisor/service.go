@@ -20,6 +20,20 @@ import (
 
 var ErrClosing = errors.New("supervisor is shutting down")
 
+// startupAttempt keeps a result immutable after done closes, even when a new
+// request starts another attempt before previous waiters resume.
+type startupAttempt struct {
+	done chan struct{}
+	err  error
+}
+
+func (a *startupAttempt) wait(ctx context.Context) error {
+	if err := wait(ctx, a.done); err != nil {
+		return err
+	}
+	return a.err
+}
+
 type Service struct {
 	dependencies       []*Service
 	dependents         map[string]int
@@ -34,7 +48,7 @@ type Service struct {
 	process            *proc.Process
 	activeRequests     int
 	idleTimer          *time.Timer
-	startDone          chan struct{}
+	startAttempt       *startupAttempt
 	startErr           error
 	stopDone           chan struct{}
 	stopErr            error
@@ -92,21 +106,21 @@ func (s *Service) acquire(ctx context.Context, dependent string) (func(), error)
 				return nil, fmt.Errorf("previous stop incomplete; retry stop before starting: %w", err)
 			}
 			s.state = StateBuilding
-			s.startDone = make(chan struct{})
+			s.startAttempt = &startupAttempt{done: make(chan struct{})}
 			s.startErr = nil
-			ch := s.startDone
+			attempt := s.startAttempt
 			attemptCtx, cancel := context.WithCancel(s.lifecycle)
 			s.startCancel = cancel
 			s.workerDone = make(chan struct{})
-			go s.start(attemptCtx, ch, s.workerDone)
+			go s.start(attemptCtx, attempt, s.workerDone)
 			s.mu.Unlock()
-			if e := wait(ctx, ch); e != nil {
+			if e := attempt.wait(ctx); e != nil {
 				return nil, e
 			}
 		case StateBuilding, StateStarting:
-			ch := s.startDone
+			attempt := s.startAttempt
 			s.mu.Unlock()
-			if e := wait(ctx, ch); e != nil {
+			if e := attempt.wait(ctx); e != nil {
 				return nil, e
 			}
 		case StateStopping:
@@ -133,7 +147,7 @@ func wait(ctx context.Context, ch <-chan struct{}) error {
 		return nil
 	}
 }
-func (s *Service) start(attemptCtx context.Context, attempt, workerDone chan struct{}) {
+func (s *Service) start(attemptCtx context.Context, attempt *startupAttempt, workerDone chan struct{}) {
 	defer close(workerDone)
 	ctx, cancel := context.WithTimeout(attemptCtx, s.cfg.StartTimeout)
 	defer cancel()
@@ -208,7 +222,7 @@ func (s *Service) start(attemptCtx context.Context, attempt, workerDone chan str
 	s.startedAt = time.Now()
 	s.starts++
 	s.startErr = nil
-	close(attempt)
+	close(attempt.done)
 	s.scheduleIdleLocked()
 	s.mu.Unlock()
 	s.logger.Info("ready", "endpoints", len(s.cfg.EndpointList()))
@@ -304,19 +318,20 @@ func (s *Service) grpcReady(ctx context.Context, p *proc.Process, endpoint confi
 		}
 	}
 }
-func (s *Service) fail(attempt chan struct{}, e error) {
+func (s *Service) fail(attempt *startupAttempt, e error) {
 	s.mu.Lock()
-	if s.startDone != attempt || (s.state != StateBuilding && s.state != StateStarting) {
+	if s.startAttempt != attempt || (s.state != StateBuilding && s.state != StateStarting) {
 		s.mu.Unlock()
 		return
 	}
 	s.state = StateFailed
 	s.startErr = e
+	attempt.err = e
 	if s.startCancel != nil {
 		s.startCancel()
 		s.startCancel = nil
 	}
-	close(attempt)
+	close(attempt.done)
 	s.process = nil
 	s.mu.Unlock()
 	s.logger.Error("startup failed", "err", e)
@@ -397,10 +412,11 @@ func (s *Service) beginStopLocked() {
 	if wasStarting && s.startCancel != nil {
 		s.startCancel()
 	}
-	if wasStarting && s.startDone != nil {
+	if wasStarting && s.startAttempt != nil {
 		s.startErr = ErrClosing
-		close(s.startDone)
-		s.startDone = nil
+		s.startAttempt.err = ErrClosing
+		close(s.startAttempt.done)
+		s.startAttempt = nil
 	}
 }
 func (s *Service) Stop(ctx context.Context) error {
