@@ -40,8 +40,48 @@ func testServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Server{cfg: cfg, path: path, token: "test-session", host: "127.0.0.1:4321", sup: &fakeController{}, store: observe.New(), busy: map[string]bool{}}
+	s, err := New(cfg, path, &fakeController{}, observe.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.token = "test-session"
+	return s
 }
+
+func TestHandlesOnlyReservedUIHostname(t *testing.T) {
+	s := testServer(t)
+	for _, tc := range []struct {
+		host string
+		want bool
+	}{
+		{Hostname, true},
+		{strings.ToUpper(Hostname) + ":3100", true},
+		{"ui.heron.localhost.evil:3100", false},
+		{"api.heron.localhost:3100", false},
+	} {
+		if got := s.HandlesHost(tc.host); got != tc.want {
+			t.Errorf("HandlesHost(%q) = %t, want %t", tc.host, got, tc.want)
+		}
+	}
+	if got, want := s.URL(), "http://ui.heron.localhost:3100"; got != want {
+		t.Fatalf("URL() = %q, want %q", got, want)
+	}
+}
+
+func TestNewRejectsReservedHostnameCollision(t *testing.T) {
+	_, err := New(config.RuntimeConfig{
+		Port: 3000,
+		Apps: map[string]config.RuntimeAppConfig{
+			"heron": {Endpoints: map[string]config.RuntimeEndpointConfig{
+				"ui": {Name: "ui", Host: Hostname, Protocol: config.ProtocolHTTP, Port: 8080},
+			}},
+		},
+	}, "test.yaml", &fakeController{}, observe.New())
+	if err == nil || !strings.Contains(err.Error(), "reserved by heron ui") {
+		t.Fatalf("New() error = %v, want reserved hostname collision", err)
+	}
+}
+
 func TestSessionAndHostProtection(t *testing.T) {
 	s := testServer(t)
 	for _, tc := range []struct{ host, origin, token string }{{"evil.test:4321", "", s.token}, {s.host, "https://evil.test", s.token}, {s.host, "", ""}} {

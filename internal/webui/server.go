@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +78,9 @@ type appView struct {
 	Pwd       string
 	Idle      string
 }
+
+const Hostname = "ui.heron.localhost"
+
 type Server struct {
 	cfg               config.RuntimeConfig
 	path, token, host string
@@ -88,34 +92,51 @@ type Server struct {
 	configMu          sync.Mutex
 }
 
-// Run owns a separate ephemeral loopback listener; proxy routes never expose controls.
-func Run(ctx context.Context, cfg config.RuntimeConfig, path string, sup Controller, store *observe.Store, output io.Writer) error {
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return err
+// New creates the UI handler served from Heron's shared HTTP listener.
+func New(cfg config.RuntimeConfig, path string, sup Controller, store *observe.Store) (*Server, error) {
+	for id, app := range cfg.Apps {
+		for _, endpoint := range app.EndpointList() {
+			for _, host := range append([]string{endpoint.Host}, endpoint.Aliases...) {
+				if strings.EqualFold(host, Hostname) {
+					return nil, fmt.Errorf("app %q endpoint %q uses %s, which is reserved by heron ui", id, endpoint.Name, Hostname)
+				}
+			}
+		}
 	}
-	defer listener.Close()
-	s := &Server{cfg: cfg, path: path, sup: sup, store: store, host: listener.Addr().String(), busy: map[string]bool{}}
 	token := make([]byte, 32)
-	if _, err = rand.Read(token); err != nil {
-		return err
+	if _, err := rand.Read(token); err != nil {
+		return nil, err
 	}
-	s.token = hex.EncodeToString(token)
-	srv := &http.Server{Handler: s, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	return &Server{
+		cfg: cfg, path: path, token: hex.EncodeToString(token),
+		host: net.JoinHostPort(Hostname, strconv.Itoa(cfg.Port)),
+		sup:  sup, store: store, busy: map[string]bool{},
+	}, nil
+}
+
+// URL is the stable browser address for the graphical UI.
+func (s *Server) URL() string { return "http://" + s.host }
+
+// HandlesHost reports whether host addresses the reserved graphical UI route.
+func (s *Server) HandlesHost(host string) bool {
+	if hostname, _, err := net.SplitHostPort(strings.TrimSpace(host)); err == nil {
+		host = hostname
+	}
+	return strings.EqualFold(strings.Trim(strings.TrimSpace(host), "[]"), Hostname)
+}
+
+// Start collects shared supervisor snapshots until ctx is canceled.
+func (s *Server) Start(ctx context.Context) func() {
 	workCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	done := make(chan struct{})
-	go func() { defer close(done); s.collect(workCtx) }()
-	defer func() { cancel(); <-done }()
-	stopped := make(chan struct{})
-	go func() { defer close(stopped); <-workCtx.Done(); _ = srv.Close() }()
-	defer func() { cancel(); <-stopped }()
-	fmt.Fprintf(output, "Heron UI: http://%s\n", s.host)
-	err = srv.Serve(listener)
-	if err == http.ErrServerClosed {
-		return nil
+	go func() {
+		defer close(done)
+		s.collect(workCtx)
+	}()
+	return func() {
+		cancel()
+		<-done
 	}
-	return err
 }
 
 func (s *Server) collect(ctx context.Context) {
@@ -176,11 +197,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-	if r.Host != s.host {
+	if !s.HandlesHost(r.Host) {
 		http.Error(w, "invalid host", http.StatusForbidden)
 		return
 	}
-	if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+s.host {
+	if origin := r.Header.Get("Origin"); origin != "" && origin != s.URL() {
 		http.Error(w, "invalid origin", http.StatusForbidden)
 		return
 	}

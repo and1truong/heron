@@ -773,10 +773,12 @@ heron ui --app api
 heron help ui
 ```
 
-Open the printed `http://127.0.0.1:<port>` address. The UI is embedded in the Go
-binary: no Node runtime, frontend build, or additional dependencies are required.
-Like TUI mode, this starts its own supervisor and proxy; it does not attach to an
-existing instance. Without `--app`, applications remain lazy until traffic or an
+Open `http://ui.heron.localhost:<configured-port>` (for the default configuration,
+`http://ui.heron.localhost:3000`). The UI shares Heron's proxy listener, so its
+address does not change between runs. The hostname is reserved while `heron ui` is
+running. The UI is embedded in the Go binary: no Node runtime, frontend build, or
+additional dependencies are required. Like TUI mode, this starts its own supervisor
+and proxy; it does not attach to an existing instance. Without `--app`, applications remain lazy until traffic or an
 explicit Start. Closing a browser tab leaves Heron running; Ctrl-C in the terminal
 shuts down Heron and its managed apps.
 
