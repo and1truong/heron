@@ -731,3 +731,25 @@ Global shutdown blocks new starts and stops dependents before dependencies. If a
 custom stop command fails, dependency leases remain held because the app may still
 be running; retry stop before restarting it. Dependency crashes are not cascaded
 into automatic restarts or stops of their dependents.
+
+
+### Debug a single app
+
+```sh
+heron --app=api
+heron tui --app=api
+heron -c ./config.yaml --app api
+```
+
+`--app` selects an exact key from `apps` and immediately starts it together with
+all transitive `dependsOn` dependencies, waiting for dependency readiness first.
+Only these apps have proxy routes, app port checks, TCP listeners, and TUI entries.
+Global scheduled tasks are disabled in this mode; global `startUp`/`tearDown`
+hooks and the shared HTTP/gRPC listener remain active. Configuration validation
+still covers the complete configuration.
+
+Startup failures exit the non-interactive command with an error after cleanup.
+The TUI stays open to inspect logs/events and retry with its Start action.
+Existing idle timeouts and lifecycle controls still apply. Unknown or empty app
+names fail before hooks, processes, or listeners start. Omit `--app` for normal
+lazy startup of the full configuration. The flag is not supported by `doctor`.

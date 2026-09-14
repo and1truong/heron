@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,10 +61,11 @@ func runArgs(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("heron", flag.ContinueOnError)
 	flags.SetOutput(output)
 	path := flags.String("c", "", "configuration file (default ~/.config/heron.yaml)")
+	app := flags.String("app", "", "start only this app and its dependencies")
 	flags.Usage = func() {
 		fmt.Fprintln(output, "Lazy-start HTTP/gRPC/TCP proxy and local process supervisor.")
-		fmt.Fprintln(output, "\nUsage: heron [-c FILE]")
-		fmt.Fprintln(output, "       heron tui [-c FILE]")
+		fmt.Fprintln(output, "\nUsage: heron [-c FILE] [--app NAME]")
+		fmt.Fprintln(output, "       heron tui [-c FILE] [--app NAME]")
 		fmt.Fprintln(output, "       heron doctor [-c FILE]")
 		fmt.Fprintln(output, "       heron help [doctor|tui]")
 		fmt.Fprintln(output, "\nCommands:")
@@ -82,6 +84,15 @@ func runArgs(args []string, output io.Writer) error {
 		}
 		return e
 	}
+	appSet := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "app" {
+			appSet = true
+		}
+	})
+	if appSet && strings.TrimSpace(*app) == "" {
+		return fmt.Errorf("--app requires a non-empty app name")
+	}
 	doctor := !interactive && flags.NArg() == 1 && flags.Arg(0) == "doctor"
 	if flags.NArg() != 0 && !doctor {
 		return fmt.Errorf("unexpected arguments: %v", flags.Args())
@@ -91,14 +102,12 @@ func runArgs(args []string, output io.Writer) error {
 		return e
 	}
 	if doctor {
+		if appSet {
+			return fmt.Errorf("--app is only supported by heron and heron tui")
+		}
 		return runDoctor(resolvedPath, output)
 	}
-	if interactive {
-		if err := tui.CheckTerminal(); err != nil {
-			return err
-		}
-	}
-	return runServerMode(resolvedPath, interactive)
+	return runSelectedServerMode(resolvedPath, interactive, *app)
 }
 
 func runDoctorArgs(defaultPath string, args []string, output io.Writer) error {
@@ -199,9 +208,24 @@ func runServer(path string) error {
 }
 
 func runServerMode(path string, interactive bool) error {
+	return runSelectedServerMode(path, interactive, "")
+}
+
+func runSelectedServerMode(path string, interactive bool, app string) error {
 	cfg, e := config.Load(path)
 	if e != nil {
 		return fmt.Errorf("load configuration: %w", e)
+	}
+	if app != "" {
+		cfg, e = cfg.SelectApp(app)
+		if e != nil {
+			return e
+		}
+	}
+	if interactive {
+		if err := tui.CheckTerminal(); err != nil {
+			return err
+		}
 	}
 	level := slog.LevelInfo
 	switch cfg.LogLevel {
@@ -279,8 +303,24 @@ func runServerMode(path string, interactive bool) error {
 		uiDone = make(chan struct{})
 		go func() { defer close(uiDone); uiErrors <- tui.Run(uiCtx, sup, observations) }()
 	}
+	var startErrors chan error
+	var startDone chan struct{}
+	if app != "" {
+		startErrors = make(chan error, 1)
+		startDone = make(chan struct{})
+		go func() {
+			defer close(startDone)
+			if err := sup.Action(uiCtx, app, "start"); err != nil {
+				logger.Error("app startup failed", "service", app, "err", err)
+				if !interactive && uiCtx.Err() == nil {
+					startErrors <- fmt.Errorf("start app %q: %w", app, err)
+				}
+			}
+		}()
+	}
 	var serveErr error
 	select {
+	case serveErr = <-startErrors:
 	case serveErr = <-uiErrors:
 	case e := <-errc:
 		if !errors.Is(e, http.ErrServerClosed) && !errors.Is(e, appProxy.ErrTCPServerClosed) {
@@ -305,6 +345,9 @@ func runServerMode(path string, interactive bool) error {
 		}
 	}
 	stopErr := sup.StopAll(ctx)
+	if startDone != nil {
+		<-startDone
+	}
 	return errors.Join(serveErr, stopErr)
 }
 
