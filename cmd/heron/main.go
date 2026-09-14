@@ -347,18 +347,27 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 		<-uiDone
 	}
 	tasks.Stop()
-	timeout := cfg.StopTimeout + 30*time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if e := appProxy.DrainServer(ctx, server, drainer, connections); e != nil {
+	// Stop apps while the frontends drain: a browser-held proxied connection
+	// (e.g. a WebSocket) never finishes on its own, but closes as soon as the
+	// app behind it stops. Stopping gets its own budget so drain time can
+	// never starve it, and heron exits only once apps are really down.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.StopTimeout+30*time.Second)
+	defer cancelShutdown()
+	drainErrc := make(chan error, 1)
+	go func() {
+		drainErrc <- appProxy.DrainServer(shutdownCtx, server, drainer, connections)
+	}()
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), cfg.StopTimeout+30*time.Second)
+	defer cancelStop()
+	stopErr := sup.StopAll(stopCtx)
+	if e := <-drainErrc; e != nil {
 		logger.Warn("HTTP drain failed", "err", e)
 	}
 	for _, tcpServer := range tcpServers {
-		if e := tcpServer.Shutdown(ctx); e != nil {
+		if e := tcpServer.Shutdown(shutdownCtx); e != nil {
 			logger.Error("TCP shutdown failed", "address", tcpServer.Addr(), "err", e)
 		}
 	}
-	stopErr := sup.StopAll(ctx)
 	if startDone != nil {
 		<-startDone
 	}

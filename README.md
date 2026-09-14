@@ -770,7 +770,11 @@ explicit Start. Closing a browser tab leaves Heron running; Ctrl-C in the termin
 shuts down Heron and its managed apps.
 
 The Applications view provides searchable state filters, process-group CPU/RSS,
-multiple endpoints, an app inspector, and dependency navigation. Stop and Restart
+multiple endpoints, an app inspector, and dependency navigation. Each HTTP endpoint
+has its own link in the table and inspector, opening in a new browser tab through
+Heron's proxy (including its configured port and path). Links remain available for
+stopped apps so lazy startup still works. The primary endpoint is marked in the
+inspector; gRPC/TCP endpoints show client addresses instead of browser links. Stop and Restart
 are disabled while active dependents hold leases; the supervisor enforces the
 same restriction for API requests. Pending operations and failures are visible.
 External/custom-stop workloads report metrics as unavailable.
