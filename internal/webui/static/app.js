@@ -467,6 +467,57 @@ $("log-output").addEventListener("keydown", (e) => {
     $("tail").hidden = false;
   }
 });
+// Reparent the existing pane: filters, buffered output and listeners stay shared.
+const logModal = $("log-modal"),
+  logPane = $("log-pane");
+const logAnchor = document.createComment("docked log pane");
+logPane.before(logAnchor);
+let logsWereCollapsed = false;
+let expandedScroll = { top: 0, left: 0 };
+function rememberExpandedScroll() {
+  expandedScroll = {
+    top: $("log-output").scrollTop,
+    left: $("log-output").scrollLeft,
+  };
+}
+// Capture before native Escape hides the dialog and resets layout measurements.
+logModal.addEventListener("cancel", rememberExpandedScroll);
+$("expand-logs").onclick = () => {
+  if (logModal.open) {
+    rememberExpandedScroll();
+    logModal.close();
+    return;
+  }
+  const top = $("log-output").scrollTop,
+    left = $("log-output").scrollLeft;
+  logsWereCollapsed = logPane.classList.contains("collapsed");
+  logPane.classList.remove("collapsed");
+  $("log-output").hidden = false;
+  $("collapse").hidden = true;
+  logModal.append(logPane);
+  $("expand-logs").textContent = "Close expanded logs";
+  $("expand-logs").setAttribute("aria-expanded", "true");
+  logModal.showModal();
+  $("expand-logs").focus({ preventScroll: true });
+  $("log-output").scrollTop = $("autoscroll").checked
+    ? $("log-output").scrollHeight
+    : top;
+  $("log-output").scrollLeft = left;
+};
+logModal.addEventListener("close", () => {
+  const { top, left } = expandedScroll;
+  logAnchor.after(logPane);
+  logPane.classList.toggle("collapsed", logsWereCollapsed);
+  $("log-output").hidden = logsWereCollapsed;
+  $("collapse").hidden = false;
+  $("expand-logs").textContent = "Expand logs";
+  $("expand-logs").setAttribute("aria-expanded", "false");
+  $("expand-logs").focus({ preventScroll: true });
+  $("log-output").scrollTop = $("autoscroll").checked
+    ? $("log-output").scrollHeight
+    : top;
+  $("log-output").scrollLeft = left;
+});
 $("collapse").onclick = () => {
   const closed = $("log-pane").classList.toggle("collapsed");
   $("log-output").hidden = closed;
@@ -502,7 +553,7 @@ for (const b of document.querySelectorAll("[data-page]"))
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "k") {
     e.preventDefault();
-    $("search").focus();
+    (logModal.open ? $("log-filter") : $("search")).focus();
   }
 });
 async function poll() {

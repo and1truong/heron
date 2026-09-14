@@ -592,3 +592,39 @@ textarea {
     padding: 10px 8px;
   }
 }
+
+/* Keep the same log controls and output in a large, viewport-bounded dialog. */
+#log-modal {
+  width: 96vw;
+  max-width: 1600px;
+  height: 90vh;
+  height: 90dvh;
+  max-height: 94vh;
+  max-height: 94dvh;
+  padding: 0;
+  overflow: hidden;
+}
+#log-modal #log-pane {
+  height: 100% !important; /* Override the user's inline dock resize height. */
+  min-height: 0;
+  max-height: none;
+  resize: none;
+  border: 0;
+}
+#log-modal #log-output {
+  min-height: 0;
+  font-size: 13px;
+}
+#log-modal .log-toolbar {
+  flex-shrink: 0;
+}
+#log-modal #log-title {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+@media (max-width: 550px) {
+  #log-modal {
+    width: 98vw;
+    height: 94dvh;
+  }
+}

@@ -117,6 +117,15 @@
           ><label
             ><input id="autoscroll" type="checkbox" checked /> Autoscroll</label
           ><button id="tail" hidden>Return to live</button>
+          <button
+            id="expand-logs"
+            type="button"
+            aria-haspopup="dialog"
+            aria-controls="log-modal"
+            aria-expanded="false"
+          >
+            Expand logs
+          </button>
         </div>
         <pre id="log-output" tabindex="0" aria-label="Application logs"></pre>
       </section>
@@ -124,6 +133,7 @@
         <span id="totals">Connecting…</span><span>Heron · Local only</span>
       </footer>
     </main>
+    <dialog id="log-modal" aria-labelledby="log-title"></dialog>
     <dialog id="editor">
       <form id="config-form">
         <div class="dialog-head">
