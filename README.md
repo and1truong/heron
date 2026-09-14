@@ -317,11 +317,22 @@ empty value remains empty. Missing variables without defaults and malformed
 expressions fail configuration loading. Defaults may contain colons. Substituted
 values are not recursively expanded; `${NAME}` remains literal.
 
-Files support single-line `KEY=value`, optional `export`, blank lines, comments,
-and single/double quotes. Double quotes support `\n`, `\r`, `\t`, `\\`, and `\"`.
-Unquoted inline comments begin with `#` following whitespace. Multiline quoted
-values are unsupported. File values are literal: no shell execution or variable
-expansion is performed.
+Files support `KEY=value`, optional `export`, blank lines, comments,
+and single/double quotes. Quoted values may span multiple lines; newlines and
+whitespace inside the quotes are preserved (CRLF line endings become LF). Double quotes support `\n`, `\r`, `\t`, `\\`, and `\"`.
+Unquoted inline comments begin with `#` following whitespace. Inside quotes,
+`#` and assignment-like lines are value content. As a Heron extension for pasted
+text, smart single-quote delimiters `‘…’` and `‘…‘` are also accepted and treated
+like literal single quotes; inner Unicode characters are not rewritten.
+File values are literal: no shell execution or variable expansion is performed.
+
+```dotenv
+FOO='
+{ "foo": "bar" }
+'
+```
+
+This sets `FOO` to the JSON text with a leading and trailing newline.
 
 Files and templates are resolved once when the configuration loads. Restart
 heron to pick up changes. The resolved environment is shared by the service's
