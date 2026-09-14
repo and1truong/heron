@@ -39,6 +39,7 @@ type Config struct {
 	Apps         map[string]AppConfig `yaml:"apps"`
 }
 type AppConfig struct {
+	DependsOn     []string                  `yaml:"dependsOn,omitempty"`
 	EnvFiles      []string                  `yaml:"envFiles,omitempty"`
 	Pwd           string                    `yaml:"pwd"`
 	Build         string                    `yaml:"build"`
@@ -76,6 +77,7 @@ type RuntimeConfig struct {
 	Apps                      map[string]RuntimeAppConfig
 }
 type RuntimeAppConfig struct {
+	DependsOn                                          []string
 	ID, Pwd, Build, Launch, Stop, Protocol, Path, Host string
 	Source                                             string
 	Env                                                map[string]string
@@ -395,7 +397,7 @@ func (c Config) Normalize() (RuntimeConfig, error) {
 		if idle < 0 {
 			return RuntimeConfig{}, fmt.Errorf("app %q: idle must be non-negative", id)
 		}
-		runtimeApp := RuntimeAppConfig{ID: id, Pwd: a.Pwd, Build: a.Build, Launch: a.Launch, Stop: a.Stop, Env: resolvedEnv, Idle: idle, StartTimeout: r.StartTimeout, StopTimeout: r.StopTimeout, Endpoints: runtimeEndpoints}
+		runtimeApp := RuntimeAppConfig{ID: id, DependsOn: append([]string(nil), a.DependsOn...), Pwd: a.Pwd, Build: a.Build, Launch: a.Launch, Stop: a.Stop, Env: resolvedEnv, Idle: idle, StartTimeout: r.StartTimeout, StopTimeout: r.StopTimeout, Endpoints: runtimeEndpoints}
 		for _, endpoint := range runtimeEndpoints {
 			if endpoint.Primary {
 				runtimeApp.Protocol, runtimeApp.Path, runtimeApp.Host = endpoint.Protocol, endpoint.Path, endpoint.Host
@@ -405,6 +407,9 @@ func (c Config) Normalize() (RuntimeConfig, error) {
 			}
 		}
 		r.Apps[id] = runtimeApp
+	}
+	if _, err := r.DependencyOrder(); err != nil {
+		return RuntimeConfig{}, err
 	}
 	return r, nil
 }

@@ -666,3 +666,43 @@ cannot be inferred reliably; their metrics are unavailable rather than reported
 as zero. The process tree preserves PID/start-time selection across refreshes;
 large trees initially collapse. Collection failures leave lifecycle controls
 available. Terminal control characters in app names/log output are sanitized.
+
+
+## App dependencies
+
+Use `dependsOn` to keep dependencies available throughout an app's lifetime:
+
+```yaml
+apps:
+  postgres:
+    pwd: /srv/project
+    launch: postgres -D ./data
+    port: 5432
+    protocol: tcp
+    listenPort: 15432
+    idle: 5m
+  api:
+    pwd: /srv/project
+    launch: ./api
+    port: 8080
+    dependsOn: [postgres]
+```
+
+Dependencies become ready before the dependent builds or launches. Each running
+app holds a lease on its direct dependencies, including between requests. Shared
+and transitive dependencies are supported; concurrent starts reuse one startup.
+Unknown IDs, self-dependencies, duplicate dependencies, and cycles are rejected.
+
+A dependency can idle-stop only after all dependent leases and active requests
+are released. Releasing the last lease starts its normal idle interval (`idle: 0`
+still disables idle shutdown). Failed or cancelled startup and unexpected process
+exit release the app's leases. Cancelling an individual request does not cancel
+shared startup. Apps using a custom `stop` command remain externally managed;
+Heron cannot detect the daemon exiting through its launcher process.
+
+Manual stop, kill, and restart reject active dependents and name the blockers.
+Stop those dependents first. TUI inspection shows dependencies and “Kept alive by”.
+Global shutdown blocks new starts and stops dependents before dependencies. If a
+custom stop command fails, dependency leases remain held because the app may still
+be running; retry stop before restarting it. Dependency crashes are not cascaded
+into automatic restarts or stops of their dependents.

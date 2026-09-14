@@ -513,6 +513,12 @@ func (m *model) detailLines(height int) []string {
 		uptime = time.Since(a.StartedAt).Round(time.Second).String()
 	}
 	lines := []string{fmt.Sprintf(" %s  %s  uptime %s  restarts %d", a.ID, a.State, uptime, a.Restarts)}
+	if len(a.DependsOn) > 0 {
+		lines = append(lines, fmt.Sprintf(" Dependencies: %s", strings.Join(a.DependsOn, ", ")))
+	}
+	if len(a.ActiveDependents) > 0 {
+		lines = append(lines, fmt.Sprintf(" Kept alive by: %s", strings.Join(a.ActiveDependents, ", ")))
+	}
 	if len(a.Processes) == 0 {
 		return pad(append(lines, " CPU/RSS: unavailable (no live owned process group)"), height)
 	}

@@ -14,6 +14,7 @@ type Supervisor struct {
 	logger   *slog.Logger
 	closing  atomic.Bool
 	cancel   context.CancelFunc
+	order    []string
 }
 
 func New(c config.RuntimeConfig, r proc.ProcessRunner, l *slog.Logger) *Supervisor {
@@ -21,6 +22,12 @@ func New(c config.RuntimeConfig, r proc.ProcessRunner, l *slog.Logger) *Supervis
 	s := &Supervisor{services: map[string]*Service{}, logger: l, cancel: cancel}
 	for id, a := range c.Apps {
 		s.services[id] = newService(ctx, a, r, l)
+	}
+	s.order, _ = c.DependencyOrder()
+	for id, a := range c.Apps {
+		for _, dep := range a.DependsOn {
+			s.services[id].dependencies = append(s.services[id].dependencies, s.services[dep])
+		}
 	}
 	return s
 }
@@ -37,16 +44,23 @@ func (s *Supervisor) Acquire(ctx context.Context, id string) (func(), error) {
 }
 func (s *Supervisor) StopAll(ctx context.Context) error {
 	s.closing.Store(true)
-	s.cancel()
-	errs := make(chan error, len(s.services))
+	// Block new acquisitions without cancelling running processes out of order.
 	for _, v := range s.services {
-		go func(x *Service) { errs <- x.Stop(ctx) }(v)
+		v.mu.Lock()
+		v.manualStopped = true
+		if (v.state == StateBuilding || v.state == StateStarting) && v.startCancel != nil {
+			v.startCancel()
+		}
+		v.mu.Unlock()
 	}
-	var stopErrs []error
-	for range s.services {
-		if e := <-errs; e != nil {
-			stopErrs = append(stopErrs, e)
+	var errs []error
+	for i := len(s.order) - 1; i >= 0; i-- {
+		if err := s.services[s.order[i]].Stop(ctx); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return errors.Join(stopErrs...)
+	if len(errs) == 0 {
+		s.cancel()
+	}
+	return errors.Join(errs...)
 }
