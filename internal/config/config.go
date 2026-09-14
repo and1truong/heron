@@ -28,15 +28,23 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 }
 
 type Config struct {
-	Resources    []string             `yaml:"resources,omitempty"`
-	Port         int                  `yaml:"port"`
-	Idle         Duration             `yaml:"idle"`
-	LogLevel     string               `yaml:"logLevel"`
-	StartTimeout Duration             `yaml:"startTimeout"`
-	StopTimeout  Duration             `yaml:"stopTimeout"`
-	StartUp      []string             `yaml:"startUp"`
-	TearDown     []string             `yaml:"tearDown"`
-	Apps         map[string]AppConfig `yaml:"apps"`
+	Resources      []string                       `yaml:"resources,omitempty"`
+	Port           int                            `yaml:"port"`
+	Idle           Duration                       `yaml:"idle"`
+	LogLevel       string                         `yaml:"logLevel"`
+	StartTimeout   Duration                       `yaml:"startTimeout"`
+	StopTimeout    Duration                       `yaml:"stopTimeout"`
+	StartUp        []string                       `yaml:"startUp"`
+	TearDown       []string                       `yaml:"tearDown"`
+	ScheduledTasks map[string]ScheduledTaskConfig `yaml:"scheduledTasks,omitempty"`
+	Apps           map[string]AppConfig           `yaml:"apps"`
+}
+type ScheduledTaskConfig struct {
+	Command    string   `yaml:"command"`
+	Every      Duration `yaml:"every"`
+	Timeout    Duration `yaml:"timeout"`
+	RunOnStart bool     `yaml:"runOnStart"`
+	Overlap    string   `yaml:"overlap"`
 }
 type AppConfig struct {
 	DependsOn     []string                  `yaml:"dependsOn,omitempty"`
@@ -74,7 +82,13 @@ type RuntimeConfig struct {
 	LogLevel                  string
 	StartTimeout, StopTimeout time.Duration
 	StartUp, TearDown         []string
+	ScheduledTasks            map[string]RuntimeScheduledTaskConfig
 	Apps                      map[string]RuntimeAppConfig
+}
+type RuntimeScheduledTaskConfig struct {
+	Name, Command, Overlap string
+	Every, Timeout         time.Duration
+	RunOnStart             bool
 }
 type RuntimeAppConfig struct {
 	DependsOn                                          []string
@@ -214,7 +228,7 @@ type resourceLoader struct {
 
 var globalFields = map[string]struct{}{
 	"port": {}, "idle": {}, "logLevel": {}, "startTimeout": {},
-	"stopTimeout": {}, "startUp": {}, "tearDown": {},
+	"stopTimeout": {}, "startUp": {}, "tearDown": {}, "scheduledTasks": {},
 }
 
 // CanonicalPath expands a leading home directory marker and resolves the path
@@ -343,13 +357,41 @@ func (c Config) Normalize() (RuntimeConfig, error) {
 		return RuntimeConfig{}, fmt.Errorf("durations must be positive")
 	}
 	r := RuntimeConfig{
-		Port:         c.Port,
-		LogLevel:     c.LogLevel,
-		StartTimeout: c.StartTimeout.Duration,
-		StopTimeout:  c.StopTimeout.Duration,
-		StartUp:      append([]string(nil), c.StartUp...),
-		TearDown:     append([]string(nil), c.TearDown...),
-		Apps:         make(map[string]RuntimeAppConfig, len(c.Apps)),
+		Port:           c.Port,
+		LogLevel:       c.LogLevel,
+		StartTimeout:   c.StartTimeout.Duration,
+		StopTimeout:    c.StopTimeout.Duration,
+		StartUp:        append([]string(nil), c.StartUp...),
+		TearDown:       append([]string(nil), c.TearDown...),
+		ScheduledTasks: make(map[string]RuntimeScheduledTaskConfig, len(c.ScheduledTasks)),
+		Apps:           make(map[string]RuntimeAppConfig, len(c.Apps)),
+	}
+	for name, task := range c.ScheduledTasks {
+		if strings.TrimSpace(name) == "" {
+			return RuntimeConfig{}, fmt.Errorf("scheduled task name is required")
+		}
+		if strings.TrimSpace(task.Command) == "" {
+			return RuntimeConfig{}, fmt.Errorf("scheduled task %q: command is required", name)
+		}
+		if task.Every.Duration <= 0 {
+			return RuntimeConfig{}, fmt.Errorf("scheduled task %q: every must be positive", name)
+		}
+		if !task.Timeout.set && task.Timeout.Duration == 0 {
+			task.Timeout.Duration = 5 * time.Minute
+		}
+		if task.Timeout.Duration <= 0 {
+			return RuntimeConfig{}, fmt.Errorf("scheduled task %q: timeout must be positive", name)
+		}
+		if task.Overlap == "" {
+			task.Overlap = "skip"
+		}
+		if task.Overlap != "skip" {
+			return RuntimeConfig{}, fmt.Errorf("scheduled task %q: invalid overlap %q (only skip is supported)", name, task.Overlap)
+		}
+		r.ScheduledTasks[name] = RuntimeScheduledTaskConfig{
+			Name: name, Command: task.Command, Every: task.Every.Duration,
+			Timeout: task.Timeout.Duration, RunOnStart: task.RunOnStart, Overlap: task.Overlap,
+		}
 	}
 	paths, hosts, ports, listenPorts := map[string]string{}, map[string]string{}, map[int]string{}, map[int]string{}
 	for id, a := range c.Apps {

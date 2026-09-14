@@ -64,6 +64,68 @@ func TestLoadLifecycleHooks(t *testing.T) {
 	}
 }
 
+func TestNormalizeScheduledTasks(t *testing.T) {
+	c := baseConfig(t.TempDir())
+	c.ScheduledTasks = map[string]ScheduledTaskConfig{
+		"cleanup": {
+			Command:    "./cleanup.sh",
+			Every:      Duration{Duration: time.Hour, set: true},
+			RunOnStart: true,
+		},
+	}
+
+	cfg, err := c.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := cfg.ScheduledTasks["cleanup"]
+	if task.Name != "cleanup" || task.Command != "./cleanup.sh" ||
+		task.Every != time.Hour || task.Timeout != 5*time.Minute ||
+		!task.RunOnStart || task.Overlap != "skip" {
+		t.Fatalf("scheduled task defaults = %#v", task)
+	}
+}
+
+func TestNormalizeRejectsInvalidScheduledTasks(t *testing.T) {
+	dir := t.TempDir()
+	tests := []struct {
+		name string
+		task ScheduledTaskConfig
+		want string
+	}{
+		{name: "missing command", task: ScheduledTaskConfig{Every: Duration{Duration: time.Hour}}, want: "command is required"},
+		{name: "missing every", task: ScheduledTaskConfig{Command: "cleanup"}, want: "every must be positive"},
+		{name: "invalid timeout", task: ScheduledTaskConfig{Command: "cleanup", Every: Duration{Duration: time.Hour}, Timeout: Duration{Duration: -time.Second, set: true}}, want: "timeout must be positive"},
+		{name: "unsupported overlap", task: ScheduledTaskConfig{Command: "cleanup", Every: Duration{Duration: time.Hour}, Overlap: "queue"}, want: "only skip is supported"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseConfig(dir)
+			c.ScheduledTasks = map[string]ScheduledTaskConfig{"cleanup": tt.task}
+			_, err := c.Normalize()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadScheduledTasks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "heron.yaml")
+	contents := fmt.Sprintf("scheduledTasks:\n  cleanup:\n    command: ./cleanup.sh\n    every: 1h\n    timeout: 30s\n    runOnStart: true\n    overlap: skip\napps:\n  api:\n    pwd: %q\n    launch: server\n    port: 1980\n", dir)
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadStrict(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task := cfg.ScheduledTasks["cleanup"]; task.Every != time.Hour || task.Timeout != 30*time.Second || !task.RunOnStart {
+		t.Fatalf("scheduled task = %#v", task)
+	}
+}
+
 func TestDefaultPathUsesHeronName(t *testing.T) {
 	path, err := DefaultPath()
 	if err != nil {
