@@ -779,7 +779,10 @@ are disabled while active dependents hold leases; the supervisor enforces the
 same restriction for API requests. Pending operations and failures are visible.
 External/custom-stop workloads report metrics as unavailable.
 
-The bottom log pane is resizable and collapsible. Disable autoscroll (or scroll
+The bottom log pane is resizable and collapsible. **Expand logs** opens the same
+pane in a large modal, retaining its filter, autoscroll, and clear-view state.
+Use **Close expanded logs** or Escape to return to the previous docked size and
+collapsed state. Cmd/Ctrl-K focuses the log filter while the modal is open. Disable autoscroll (or scroll
 up) to freeze the displayed history; **Return to live** resumes the bounded stream.
 **Clear view** only hides current entries in that browser. Activity shows separate
 app and runtime lifecycle events. Logs/events retain at most 500 entries per app.
