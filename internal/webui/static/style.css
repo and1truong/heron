@@ -592,3 +592,30 @@ textarea {
     padding: 10px 8px;
   }
 }
+
+.endpoint-list,
+.endpoint-detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.endpoint-detail {
+  margin: 14px 0;
+  font-size: 12px;
+}
+.endpoint-link {
+  color: var(--teal);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.endpoint-link:hover {
+  color: #064e56;
+}
+.endpoint-link:focus-visible {
+  outline: 3px solid #51b7bc;
+  outline-offset: 3px;
+  border-radius: 2px;
+}

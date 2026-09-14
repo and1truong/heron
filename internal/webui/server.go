@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,10 +33,44 @@ type Controller interface {
 	Snapshots() []supervisor.Snapshot
 	Action(context.Context, string, string) error
 }
+type endpointView struct {
+	config.RuntimeEndpointConfig
+	URL     string
+	Address string
+}
+
+// Browser links target the proxy, so opening a stopped app retains lazy startup.
+func endpointViews(cfg config.RuntimeConfig, app config.RuntimeAppConfig) []endpointView {
+	result := make([]endpointView, 0)
+	for _, endpoint := range app.EndpointList() {
+		view := endpointView{RuntimeEndpointConfig: endpoint}
+		host := endpoint.Host
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		switch endpoint.Protocol {
+		case config.ProtocolHTTP:
+			path := endpoint.Path
+			if path == "" {
+				path = "/"
+			}
+			target := url.URL{Scheme: "http", Host: net.JoinHostPort(host, fmt.Sprint(cfg.Port)), Path: path}
+			view.URL = target.String()
+			view.Address = view.URL
+		case config.ProtocolGRPC:
+			view.Address = "grpc://" + net.JoinHostPort(host, fmt.Sprint(cfg.Port))
+		case config.ProtocolTCP:
+			view.Address = "tcp://" + net.JoinHostPort("127.0.0.1", fmt.Sprint(endpoint.ListenPort))
+		}
+		result = append(result, view)
+	}
+	return result
+}
+
 type appView struct {
 	supervisor.Snapshot
 	Status    string
-	Endpoints []config.RuntimeEndpointConfig
+	Endpoints []endpointView
 	CPU       *float64
 	RSS       *uint64
 	External  bool
@@ -97,7 +132,7 @@ func (s *Server) collect(ctx context.Context) {
 		apps := make([]appView, 0, len(before))
 		for _, snap := range s.sup.Snapshots() {
 			cfg := s.cfg.Apps[snap.ID]
-			a := appView{Snapshot: snap, Status: snap.State.String(), Endpoints: cfg.EndpointList(), External: cfg.Stop != "", Pwd: cfg.Pwd, Idle: cfg.Idle.String()}
+			a := appView{Snapshot: snap, Status: snap.State.String(), Endpoints: endpointViews(s.cfg, cfg), External: cfg.Stop != "", Pwd: cfg.Pwd, Idle: cfg.Idle.String()}
 			stable := false
 			for _, b := range before {
 				if b.ID == snap.ID && b.PID == snap.PID && b.StartedAt == snap.StartedAt {

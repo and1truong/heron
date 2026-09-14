@@ -153,3 +153,40 @@ func TestAssetsAndLogIsolation(t *testing.T) {
 		t.Fatal("unknown log scope accepted")
 	}
 }
+
+func TestEndpointLinksUsePublicRoutes(t *testing.T) {
+	cfg := config.RuntimeConfig{Port: 3100}
+	app := config.RuntimeAppConfig{Endpoints: map[string]config.RuntimeEndpointConfig{
+		"web":     {Name: "web", Protocol: config.ProtocolHTTP, Host: "app.localhost", Port: 8080, Primary: true},
+		"metrics": {Name: "metrics", Protocol: config.ProtocolHTTP, Host: "metrics.app.localhost", Port: 9090},
+		"admin":   {Name: "admin", Protocol: config.ProtocolHTTP, Path: "/admin console/#status", Port: 8081},
+		"rpc":     {Name: "rpc", Protocol: config.ProtocolGRPC, Host: "rpc.app.localhost", Port: 50051},
+		"db":      {Name: "db", Protocol: config.ProtocolTCP, Port: 5432, ListenPort: 15432},
+	}}
+	views := endpointViews(cfg, app)
+	want := map[string]string{"web": "http://app.localhost:3100/", "metrics": "http://metrics.app.localhost:3100/", "admin": "http://127.0.0.1:3100/admin%20console/%23status", "rpc": "grpc://rpc.app.localhost:3100", "db": "tcp://127.0.0.1:15432"}
+	if len(views) != len(want) {
+		t.Fatalf("lost endpoints: %v", views)
+	}
+	for _, e := range views {
+		if e.Address != want[e.Name] {
+			t.Errorf("%s address = %s", e.Name, e.Address)
+		}
+		if e.Protocol != config.ProtocolHTTP && e.URL != "" {
+			t.Errorf("non-browser endpoint linked: %s", e.URL)
+		}
+		if e.Protocol == config.ProtocolHTTP && e.URL != e.Address {
+			t.Errorf("missing link: %s", e.Name)
+		}
+		if e.Name == "web" && !e.Primary {
+			t.Error("primary metadata lost")
+		}
+	}
+	legacy := endpointViews(cfg, config.RuntimeAppConfig{Port: 8080, Protocol: config.ProtocolHTTP, Host: "legacy.localhost"})
+	if len(legacy) != 1 || legacy[0].URL != "http://legacy.localhost:3100/" {
+		t.Fatalf("legacy endpoint: %v", legacy)
+	}
+	if len(endpointViews(cfg, config.RuntimeAppConfig{})) != 0 {
+		t.Fatal("invented endpoint for process-only app")
+	}
+}
