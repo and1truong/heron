@@ -82,6 +82,34 @@ async function act(id, action) {
 function status(a) {
   return el("span", a.Status, "status " + a.Status);
 }
+function endpointLink(app, endpoint, detailed = false) {
+  if (!endpoint.URL) {
+    const text = el(
+      "span",
+      detailed
+        ? `${endpoint.Name} · ${endpoint.Address}`
+        : `${endpoint.Name} · ${endpoint.Protocol}`,
+      "muted",
+    );
+    text.title = "Use a protocol client: " + endpoint.Address;
+    return text;
+  }
+  const link = el(
+    "a",
+    detailed ? endpoint.URL + " ↗" : endpoint.Name + " ↗",
+    "endpoint-link",
+  );
+  link.href = endpoint.URL;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.title = "Open " + endpoint.Name + ": " + endpoint.URL;
+  link.setAttribute(
+    "aria-label",
+    `Open ${app.ID} ${endpoint.Name} in a new tab`,
+  );
+  link.dataset.focus = `endpoint-${detailed ? "detail" : "table"}-${app.ID}-${endpoint.Name}`;
+  return link;
+}
 function render() {
   const focused = document.activeElement;
   const focusKey = focused?.dataset?.focus;
@@ -134,9 +162,15 @@ function render() {
       tr.append(name);
       const st = el("td");
       st.append(status(a));
+      const endpointCell = el("td");
+      const endpointList = el("div", undefined, "endpoint-list");
+      for (const endpoint of a.Endpoints || [])
+        endpointList.append(endpointLink(a, endpoint));
+      if (!a.Endpoints?.length) endpointList.append(el("span", "—", "muted"));
+      endpointCell.append(endpointList);
       tr.append(
         st,
-        el("td", (a.Endpoints || []).map((e) => e.Port).join(", ") || "—"),
+        endpointCell,
         el("td", a.CPU == null ? "—" : a.CPU.toFixed(1) + "%"),
         el("td", a.RSS == null ? "—" : (a.RSS / 1048576).toFixed(1) + " MB"),
       );
@@ -262,14 +296,13 @@ function renderInspector() {
   if (!a.Endpoints?.length)
     endpoints.append(el("p", "Process only · no network endpoint", "muted"));
   else
-    for (const e of a.Endpoints)
-      endpoints.append(
-        el(
-          "p",
-          `${e.Name} · ${e.Protocol} · :${e.Port}${e.Host ? " · " + e.Host : ""}${e.ListenPort ? " · listen :" + e.ListenPort : ""}`,
-          "muted",
-        ),
-      );
+    for (const e of a.Endpoints) {
+      const entry = el("div", undefined, "endpoint-detail");
+      entry.append(el("strong", `${e.Name}${e.Primary ? " · Primary" : ""}`));
+      entry.append(endpointLink(a, e, true));
+      entry.append(el("span", `${e.Protocol} · backend :${e.Port}`, "muted"));
+      endpoints.append(entry);
+    }
   root.append(endpoints);
   for (const [title, ids] of [
     ["Dependencies", a.DependsOn],
