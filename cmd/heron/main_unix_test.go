@@ -144,6 +144,67 @@ func TestInterruptDuringStartUpIsGraceful(t *testing.T) {
 	}
 }
 
+func TestScheduledTaskIsCanceledBeforeTearDown(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "heron")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build heron: %v\n%s", err, output)
+	}
+
+	port := unusedPort(t)
+	outputPath := filepath.Join(dir, "lifecycle.log")
+	configPath := filepath.Join(dir, "heron.yaml")
+	startCommand := "echo start >> " + strconv.Quote(outputPath)
+	taskCommand := "echo scheduled >> " + strconv.Quote(outputPath) + "; sleep 30"
+	tearDownCommand := "echo tearDown >> " + strconv.Quote(outputPath)
+	contents := fmt.Sprintf(
+		"port: %d\nstartUp:\n  - %s\ntearDown:\n  - %s\nscheduledTasks:\n  blocking:\n    command: %s\n    every: 1h\n    timeout: 1h\n    runOnStart: true\napps: {}\n",
+		port, strconv.Quote(startCommand), strconv.Quote(tearDownCommand), strconv.Quote(taskCommand),
+	)
+	if err := os.WriteFile(configPath, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(binary, "-c", configPath)
+	var processOutput lockedBuffer
+	cmd.Stdout = &processOutput
+	cmd.Stderr = &processOutput
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	defer func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			<-done
+		}
+	}()
+
+	waitForListener(t, port, done, &processOutput)
+	waitForFileContent(t, outputPath, "start\nscheduled\n", done, &processOutput)
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("heron exited with error: %v\n%s", err, processOutput.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("heron did not stop after interrupt\n%s", processOutput.String())
+	}
+
+	got, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "start\nscheduled\ntearDown\n" {
+		t.Fatalf("lifecycle output = %q", got)
+	}
+}
+
 func unusedPort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -12,6 +12,14 @@ startUp:
 tearDown:
   - docker compose down
 
+scheduledTasks:
+  cleanup:
+    command: ./scripts/cleanup.sh
+    every: 1h
+    timeout: 5m
+    runOnStart: false
+    overlap: skip
+
 apps:
   api:
     pwd: /path/to/api

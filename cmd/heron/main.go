@@ -10,6 +10,7 @@ import (
 	"github.com/and1truong/heron/internal/observe"
 	proc "github.com/and1truong/heron/internal/process"
 	appProxy "github.com/and1truong/heron/internal/proxy"
+	"github.com/and1truong/heron/internal/scheduler"
 	"github.com/and1truong/heron/internal/supervisor"
 	"github.com/and1truong/heron/internal/tui"
 	"io"
@@ -222,6 +223,7 @@ func runServerMode(path string, interactive bool) error {
 	}
 	runner := proc.NewRunner(logger)
 	hooks := lifecycle.New(cfg.StartUp, cfg.TearDown, runner, logger)
+	tasks := scheduler.New(cfg.ScheduledTasks, runner, logger)
 	sup := supervisor.New(cfg, runner, logger)
 	drainer := appProxy.NewDrainHandler(appProxy.NewHandler(cfg, sup, logger))
 	http2Server := &http2.Server{}
@@ -252,6 +254,8 @@ func runServerMode(path string, interactive bool) error {
 		}
 		return e
 	}
+	tasks.Start(context.Background())
+	defer tasks.Stop()
 	listeners, e := listenLoopbacks(cfg.Port)
 	if e != nil {
 		return e
@@ -288,6 +292,7 @@ func runServerMode(path string, interactive bool) error {
 	if uiDone != nil {
 		<-uiDone
 	}
+	tasks.Stop()
 	timeout := cfg.StopTimeout + 30*time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

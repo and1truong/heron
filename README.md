@@ -48,6 +48,7 @@ Services remain stopped until requested.
 * Per-service log prefixes
 * Configurable log levels
 * Config doctor for validating every configured service
+* Fixed-interval process-wide scheduled tasks
 * Graceful shutdown on `SIGINT` / `SIGTERM`
 * Minimal dependencies
 
@@ -129,6 +130,14 @@ startUp:
 tearDown:
   - /path/to/custom/cleanup-command
 
+scheduledTasks:
+  cleanup:
+    command: /path/to/custom/cleanup-script
+    every: 1h
+    timeout: 5m
+    runOnStart: false
+    overlap: skip
+
 apps:
   SERVICE_ID:
     pwd: /path/to/dir
@@ -156,15 +165,16 @@ apps:
 
 ### Global options
 
-| Option         | Description                                        | Default  |
-| -------------- | -------------------------------------------------- | -------- |
-| `port`         | Port `heron` listens on                            | `3000`   |
-| `idle`         | Default service idle timeout                       | `30m`    |
-| `startTimeout` | Maximum time to wait for a service to become ready | `30s`    |
-| `stopTimeout`  | Maximum time allowed for service shutdown          | `10s`    |
-| `logLevel`     | `debug`, `info`, `warning`, or `error`             | `info`   |
-| `startUp`      | Commands run sequentially before traffic is served | `[]`     |
-| `tearDown`     | Best-effort commands run sequentially on shutdown  | `[]`     |
+| Option           | Description                                        | Default |
+| ---------------- | -------------------------------------------------- | ------- |
+| `port`           | Port `heron` listens on                            | `3000`  |
+| `idle`           | Default service idle timeout                       | `30m`   |
+| `startTimeout`   | Maximum time to wait for a service to become ready | `30s`   |
+| `stopTimeout`    | Maximum time allowed for service shutdown          | `10s`   |
+| `logLevel`       | `debug`, `info`, `warning`, or `error`             | `info`  |
+| `startUp`        | Commands run sequentially before traffic is served | `[]`    |
+| `tearDown`       | Best-effort commands run sequentially on shutdown  | `[]`    |
+| `scheduledTasks` | Named fixed-interval commands                      | `{}`    |
 
 ### Composing configuration files
 
@@ -198,6 +208,21 @@ composition only: their order does not imply merge or override behavior. V1
 supports local YAML files, not URLs, globs, directories, inheritance, or patches.
 
 `startUp` and `tearDown` are process-wide hooks. Each command uses the platform shell and inherits heron's working directory and environment, matching service command execution. A failed `startUp` command aborts startup. During shutdown, every `tearDown` command is attempted even when an earlier command fails.
+
+### Scheduled tasks
+
+`scheduledTasks` starts after `startUp` succeeds and runs only while Heron is
+active. Each task requires a `command` and positive `every` duration. `timeout`
+defaults to `5m`; `runOnStart` defaults to `false`; and `overlap` defaults to
+`skip`, the only policy supported in this version.
+
+A task normally waits one full interval before its first run. With
+`runOnStart: true`, it also runs immediately. If the previous invocation is
+still active at the next tick, that tick is skipped. Failures are logged and
+later runs continue. Heron does not persist schedules or catch up missed runs.
+On shutdown it stops the scheduler, cancels and joins active task processes,
+then runs `tearDown`. Commands inherit Heron's working directory and
+environment.
 
 ### Service options
 
