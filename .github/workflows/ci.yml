@@ -40,6 +40,7 @@ jobs:
           go build -o heron-test ./cmd/heron
           python3 scripts/tui_smoke.py
           python3 scripts/app_smoke.py
+          python3 scripts/ui_smoke.py
 
       - name: Check Go formatting
         run: test -z "$(gofmt -l cmd/heron/main.go cmd/heron/help_test.go internal/supervisor/service.go internal/supervisor/inspection*.go internal/process/tracker*.go internal/observe internal/tui)"

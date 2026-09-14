@@ -15,6 +15,7 @@ func TestHelpDoesNotLoadConfiguration(t *testing.T) {
 		{"help"}, {"-h"}, {"--help"}, {"-c", missing, "--help"},
 		{"help", "doctor"}, {"doctor", "-h"}, {"doctor", "--help"},
 		{"doctor", "-c", missing, "--help"},
+		{"help", "ui"}, {"ui", "-h"}, {"ui", "-c", missing, "--help"},
 		{"help", "tui"}, {"tui", "-h"}, {"tui", "-c", missing, "--help"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -36,6 +37,7 @@ func TestHelpAliasesMatch(t *testing.T) {
 		{{"help"}, {"--help"}},
 		{{"help", "doctor"}, {"doctor", "--help"}},
 		{{"help", "tui"}, {"tui", "--help"}},
+		{{"help", "ui"}, {"ui", "--help"}},
 	} {
 		var first, second bytes.Buffer
 		if err := runArgs(pair[0], &first); err != nil {

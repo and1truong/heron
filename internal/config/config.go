@@ -177,11 +177,35 @@ func LoadStrict(path string) (RuntimeConfig, error) {
 }
 
 func load(path string, strict bool) (RuntimeConfig, error) {
+	return loadWithReader(path, strict, os.ReadFile)
+}
+
+// ValidateOverlay validates a prospective source edit without writing or executing it.
+func ValidateOverlay(root, source string, content []byte) error {
+	canonical, err := CanonicalPath(source)
+	if err != nil {
+		return err
+	}
+	used := false
+	_, err = loadWithReader(root, true, func(path string) ([]byte, error) {
+		if path == canonical {
+			used = true
+			return content, nil
+		}
+		return os.ReadFile(path)
+	})
+	if err == nil && !used {
+		return fmt.Errorf("configuration source is no longer included; restart Heron before editing")
+	}
+	return err
+}
+
+func loadWithReader(path string, strict bool, readFile func(string) ([]byte, error)) (RuntimeConfig, error) {
 	root, err := CanonicalPath(path)
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
-	b, err := os.ReadFile(root)
+	b, err := readFile(root)
 	if err != nil {
 		return RuntimeConfig{}, err
 	}
@@ -195,7 +219,7 @@ func load(path string, strict bool) (RuntimeConfig, error) {
 	for id := range c.Apps {
 		sources[id] = root
 	}
-	loader := resourceLoader{strict: strict, apps: c.Apps, sources: sources}
+	loader := resourceLoader{strict: strict, apps: c.Apps, sources: sources, readFile: readFile}
 	if loader.apps == nil {
 		loader.apps = make(map[string]AppConfig)
 	}
@@ -221,9 +245,10 @@ type resourceConfig struct {
 }
 
 type resourceLoader struct {
-	strict  bool
-	apps    map[string]AppConfig
-	sources map[string]string
+	readFile func(string) ([]byte, error)
+	strict   bool
+	apps     map[string]AppConfig
+	sources  map[string]string
 }
 
 var globalFields = map[string]struct{}{
@@ -280,7 +305,11 @@ func (l *resourceLoader) loadAll(resources []string, declaringFile string, stack
 }
 
 func (l *resourceLoader) loadOne(path string, stack []string) error {
-	b, err := os.ReadFile(path)
+	read := l.readFile
+	if read == nil {
+		read = os.ReadFile
+	}
+	b, err := read(path)
 	if err != nil {
 		return err
 	}

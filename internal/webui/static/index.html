@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="heron-token" content="SESSION_TOKEN" />
+    <title>Heron · Applications</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Heron home"
+        ><svg viewBox="0 0 36 48" aria-hidden="true">
+          <path
+            d="M9 43h15M17 42V29C3 26 13 17 22 14c4-2 1-6-3-7l-3-1 8-3 8 5-7 1c3 6-3 9-6 12-5 5-3 8 2 9L17 42"
+          /></svg
+        >Heron</a
+      >
+      <div class="machine">
+        Local machine<span id="connection" role="status">Connecting…</span>
+      </div>
+      <nav>
+        <button data-page="apps" class="active">
+          ▦ <span>Applications</span></button
+        ><button data-page="activity">◷ <span>Activity</span></button
+        ><button data-page="settings">⚙ <span>Settings</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        Local only<br /><small>Your services. Your machine.</small>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div>
+          <h1 id="title">Applications</h1>
+          <p id="subtitle">Your local services, in one place.</p>
+        </div>
+        <div class="toolbar">
+          <input
+            id="search"
+            type="search"
+            placeholder="Search applications…"
+            aria-label="Search applications"
+          /><button class="primary" id="add">＋ Add app</button>
+        </div>
+      </header>
+      <div id="notice" role="status" hidden></div>
+      <section id="apps-page" class="page">
+        <div id="filters" aria-label="Filter by status"></div>
+        <div class="workspace">
+          <section class="list panel" aria-label="Applications">
+            <table>
+              <thead>
+                <tr>
+                  <th>App</th>
+                  <th>Status</th>
+                  <th>Port</th>
+                  <th>CPU</th>
+                  <th>Memory</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+            <p id="empty" class="empty">Connecting to Heron…</p>
+          </section>
+          <aside
+            id="inspector"
+            class="panel inspector"
+            aria-label="Selected application"
+          ></aside>
+        </div>
+      </section>
+      <section id="activity-page" class="page panel" hidden>
+        <h2>Lifecycle activity</h2>
+        <p>
+          Structured events for the selected application, plus Heron runtime
+          events.
+        </p>
+        <div id="events" class="event-list"></div>
+      </section>
+      <section id="settings-page" class="page panel" hidden>
+        <h2>Runtime settings</h2>
+        <dl>
+          <dt>Configuration file</dt>
+          <dd id="config-path"></dd>
+          <dt>Connection</dt>
+          <dd>Loopback only · separate from proxy routes</dd>
+          <dt>Refresh</dt>
+          <dd>1 second</dd>
+          <dt>Retention</dt>
+          <dd>500 log entries and 500 lifecycle events per app, in memory</dd>
+        </dl>
+        <p>
+          Configuration changes take effect after restarting Heron. Closing this
+          browser tab leaves the supervisor running.
+        </p>
+        <p>
+          CPU: 100% = one core. Memory: aggregate process-group RSS; shared
+          pages may be counted more than once. External daemon metrics are
+          unavailable.
+        </p>
+      </section>
+      <section class="logs panel" id="log-pane">
+        <div class="log-toolbar">
+          <button id="collapse" aria-expanded="true" aria-label="Collapse logs">
+            ⌄</button
+          ><strong id="log-title">Logs</strong
+          ><span id="live" class="muted">Connecting</span
+          ><input
+            id="log-filter"
+            type="search"
+            placeholder="Filter logs…"
+            aria-label="Filter logs"
+          /><button id="clear">Clear view</button
+          ><label
+            ><input id="autoscroll" type="checkbox" checked /> Autoscroll</label
+          ><button id="tail" hidden>Return to live</button>
+        </div>
+        <pre id="log-output" tabindex="0" aria-label="Application logs"></pre>
+      </section>
+      <footer>
+        <span id="totals">Connecting…</span><span>Heron · Local only</span>
+      </footer>
+    </main>
+    <dialog id="editor">
+      <form id="config-form">
+        <div class="dialog-head">
+          <h2 id="editor-title">App configuration</h2>
+          <button type="button" id="close-editor" aria-label="Close editor">
+            ✕
+          </button>
+        </div>
+        <label>App name<input id="app-name" required /></label>
+        <p id="source" class="muted"></p>
+        <p>
+          Restart Heron after saving to apply changes. Other applications and
+          global settings are preserved.
+        </p>
+        <button id="reveal" type="button">Reveal configuration and edit</button
+        ><label id="yaml-label" hidden
+          >App YAML<textarea id="yaml" spellcheck="false" rows="15"></textarea>
+        </label>
+        <p id="editor-error" role="alert"></p>
+        <button class="primary" id="save" disabled>Save configuration</button>
+      </form>
+    </dialog>
+  </body>
+</html>

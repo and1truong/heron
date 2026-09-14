@@ -13,6 +13,7 @@ import (
 	"github.com/and1truong/heron/internal/scheduler"
 	"github.com/and1truong/heron/internal/supervisor"
 	"github.com/and1truong/heron/internal/tui"
+	"github.com/and1truong/heron/internal/webui"
 	"io"
 	"log/slog"
 	"net"
@@ -44,7 +45,7 @@ func runArgs(args []string, output io.Writer) error {
 		switch {
 		case len(args) == 1:
 			args = []string{"-h"}
-		case len(args) == 2 && (args[1] == "doctor" || args[1] == "tui"):
+		case len(args) == 2 && (args[1] == "doctor" || args[1] == "tui" || args[1] == "ui"):
 			args = []string{args[1], "-h"}
 		default:
 			return fmt.Errorf("help: unknown topic or unexpected arguments: %v (use heron help)", args[1:])
@@ -54,7 +55,8 @@ func runArgs(args []string, output io.Writer) error {
 		return runDoctorArgs("", args[1:], output)
 	}
 	interactive := len(args) > 0 && args[0] == "tui"
-	if interactive {
+	graphical := len(args) > 0 && args[0] == "ui"
+	if interactive || graphical {
 		args = args[1:]
 	}
 
@@ -66,9 +68,11 @@ func runArgs(args []string, output io.Writer) error {
 		fmt.Fprintln(output, "Lazy-start HTTP/gRPC/TCP proxy and local process supervisor.")
 		fmt.Fprintln(output, "\nUsage: heron [-c FILE] [--app NAME]")
 		fmt.Fprintln(output, "       heron tui [-c FILE] [--app NAME]")
+		fmt.Fprintln(output, "       heron ui [-c FILE] [--app NAME]")
 		fmt.Fprintln(output, "       heron doctor [-c FILE]")
-		fmt.Fprintln(output, "       heron help [doctor|tui]")
+		fmt.Fprintln(output, "       heron help [doctor|tui|ui]")
 		fmt.Fprintln(output, "\nCommands:")
+		fmt.Fprintln(output, "  ui      Start proxy with local graphical app manager")
 		fmt.Fprintln(output, "  tui     Start proxy with interactive app, process, log and event panes")
 		fmt.Fprintln(output, "  doctor  Validate configuration without running hooks or app commands")
 		fmt.Fprintln(output, "  help    Show general help or help for a command")
@@ -93,7 +97,7 @@ func runArgs(args []string, output io.Writer) error {
 	if appSet && strings.TrimSpace(*app) == "" {
 		return fmt.Errorf("--app requires a non-empty app name")
 	}
-	doctor := !interactive && flags.NArg() == 1 && flags.Arg(0) == "doctor"
+	doctor := !interactive && !graphical && flags.NArg() == 1 && flags.Arg(0) == "doctor"
 	if flags.NArg() != 0 && !doctor {
 		return fmt.Errorf("unexpected arguments: %v", flags.Args())
 	}
@@ -107,7 +111,7 @@ func runArgs(args []string, output io.Writer) error {
 		}
 		return runDoctor(resolvedPath, output)
 	}
-	return runSelectedServerMode(resolvedPath, interactive, *app)
+	return runSelectedMode(resolvedPath, interactive, graphical, *app, output)
 }
 
 func runDoctorArgs(defaultPath string, args []string, output io.Writer) error {
@@ -212,6 +216,9 @@ func runServerMode(path string, interactive bool) error {
 }
 
 func runSelectedServerMode(path string, interactive bool, app string) error {
+	return runSelectedMode(path, interactive, false, app, os.Stdout)
+}
+func runSelectedMode(path string, interactive, graphical bool, app string, output io.Writer) error {
 	cfg, e := config.Load(path)
 	if e != nil {
 		return fmt.Errorf("load configuration: %w", e)
@@ -238,7 +245,7 @@ func runSelectedServerMode(path string, interactive bool, app string) error {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	var observations *observe.Store
-	if interactive {
+	if interactive || graphical {
 		observations = observe.New()
 		logger = slog.New(&observe.Handler{Store: observations, Level: level})
 	}
@@ -298,10 +305,17 @@ func runSelectedServerMode(path string, interactive bool, app string) error {
 	defer cancelUI()
 	var uiErrors chan error
 	var uiDone chan struct{}
-	if interactive {
+	if interactive || graphical {
 		uiErrors = make(chan error, 1)
 		uiDone = make(chan struct{})
-		go func() { defer close(uiDone); uiErrors <- tui.Run(uiCtx, sup, observations) }()
+		go func() {
+			defer close(uiDone)
+			if graphical {
+				uiErrors <- webui.Run(uiCtx, cfg, path, sup, observations, output)
+			} else {
+				uiErrors <- tui.Run(uiCtx, sup, observations)
+			}
+		}()
 	}
 	var startErrors chan error
 	var startDone chan struct{}
@@ -312,7 +326,7 @@ func runSelectedServerMode(path string, interactive bool, app string) error {
 			defer close(startDone)
 			if err := sup.Action(uiCtx, app, "start"); err != nil {
 				logger.Error("app startup failed", "service", app, "err", err)
-				if !interactive && uiCtx.Err() == nil {
+				if !interactive && !graphical && uiCtx.Err() == nil {
 					startErrors <- fmt.Errorf("start app %q: %w", app, err)
 				}
 			}

@@ -753,3 +753,43 @@ The TUI stays open to inspect logs/events and retry with its Start action.
 Existing idle timeouts and lifecycle controls still apply. Unknown or empty app
 names fail before hooks, processes, or listeners start. Omit `--app` for normal
 lazy startup of the full configuration. The flag is not supported by `doctor`.
+
+## Graphical UI
+
+```sh
+heron ui -c ./config.yaml
+heron ui --app api
+heron help ui
+```
+
+Open the printed `http://127.0.0.1:<port>` address. The UI is embedded in the Go
+binary: no Node runtime, frontend build, or additional dependencies are required.
+Like TUI mode, this starts its own supervisor and proxy; it does not attach to an
+existing instance. Without `--app`, applications remain lazy until traffic or an
+explicit Start. Closing a browser tab leaves Heron running; Ctrl-C in the terminal
+shuts down Heron and its managed apps.
+
+The Applications view provides searchable state filters, process-group CPU/RSS,
+multiple endpoints, an app inspector, and dependency navigation. Stop and Restart
+are disabled while active dependents hold leases; the supervisor enforces the
+same restriction for API requests. Pending operations and failures are visible.
+External/custom-stop workloads report metrics as unavailable.
+
+The bottom log pane is resizable and collapsible. Disable autoscroll (or scroll
+up) to freeze the displayed history; **Return to live** resumes the bounded stream.
+**Clear view** only hides current entries in that browser. Activity shows separate
+app and runtime lifecycle events. Logs/events retain at most 500 entries per app.
+Use Cmd/Ctrl-K to focus app search; controls support normal keyboard navigation.
+
+**Add app** and **Configuration** edit one application's YAML in its original
+source file, including composed resource files. Configuration is hidden until
+explicitly revealed because it can contain credentials. Save validates the entire
+resource/dependency graph without running hooks or commands, preserves unrelated
+YAML nodes and file permissions, and rejects stale edits. Restart Heron to apply
+saved changes; saving does not change the running supervisor. YAML whitespace may
+be normalized. Concurrent external editors should still be avoided during save:
+the version check catches observed changes but is not an OS-wide file lock.
+
+The UI uses a separate ephemeral IPv4 loopback listener, validates Host/Origin,
+and requires a per-session token for API access. It is not served through app
+proxy routes. It is intended for the local user, not remote access or hosting.
