@@ -79,6 +79,23 @@ The release workflow runs the test suite and `go vet`, then GoReleaser publishes
 
 ## Usage
 
+### Full restart API
+
+Agents and local automation can ask a running Heron instance to gracefully
+restart its complete runtime and reload configuration from disk:
+
+```bash
+curl -X POST \
+  -H 'X-Heron-Command: restart' \
+  http://heron.localhost:3000/_heron/restart
+```
+
+The loopback-only endpoint returns `202 Accepted`, deduplicates concurrent
+requests, stops all apps and runtime components, then starts them again using
+the current configuration. Replace `3000` with the configured Heron port.
+
+### Commands
+
 Show available commands, options, and examples:
 
 ```bash
