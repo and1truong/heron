@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/and1truong/heron/internal/config"
+	"github.com/and1truong/heron/internal/control"
 	"github.com/and1truong/heron/internal/lifecycle"
 	"github.com/and1truong/heron/internal/observe"
 	proc "github.com/and1truong/heron/internal/process"
@@ -219,19 +220,28 @@ func runSelectedServerMode(path string, interactive bool, app string) error {
 	return runSelectedMode(path, interactive, false, app, os.Stdout)
 }
 func runSelectedMode(path string, interactive, graphical bool, app string, output io.Writer) error {
+	for {
+		restart, err := runSelectedModeOnce(path, interactive, graphical, app, output)
+		if err != nil || !restart {
+			return err
+		}
+	}
+}
+
+func runSelectedModeOnce(path string, interactive, graphical bool, app string, output io.Writer) (bool, error) {
 	cfg, e := config.Load(path)
 	if e != nil {
-		return fmt.Errorf("load configuration: %w", e)
+		return false, fmt.Errorf("load configuration: %w", e)
 	}
 	if app != "" {
 		cfg, e = cfg.SelectApp(app)
 		if e != nil {
-			return e
+			return false, e
 		}
 	}
 	if interactive {
 		if err := tui.CheckTerminal(); err != nil {
-			return err
+			return false, err
 		}
 	}
 	level := slog.LevelInfo
@@ -250,7 +260,7 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 		logger = slog.New(&observe.Handler{Store: observations, Level: level})
 	}
 	if e := preflightRequiredPorts(context.Background(), cfg, logger); e != nil {
-		return e
+		return false, e
 	}
 	runner := proc.NewRunner(logger)
 	hooks := lifecycle.New(cfg.StartUp, cfg.TearDown, runner, logger)
@@ -261,25 +271,31 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 	if graphical {
 		ui, e = webui.New(cfg, path, sup, observations)
 		if e != nil {
-			return fmt.Errorf("create graphical UI: %w", e)
+			return false, fmt.Errorf("create graphical UI: %w", e)
 		}
 	}
+	restartc := make(chan struct{})
+	controlHandler := control.New(func() { close(restartc) })
 	rootHandler := http.Handler(proxyHandler)
-	if ui != nil {
-		rootHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	rootHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if control.HandlesHost(r.Host) {
+			controlHandler.ServeHTTP(w, r)
+			return
+		}
+		if ui != nil {
 			if ui.HandlesHost(r.Host) {
 				ui.ServeHTTP(w, r)
 				return
 			}
-			proxyHandler.ServeHTTP(w, r)
-		})
-	}
+		}
+		proxyHandler.ServeHTTP(w, r)
+	})
 	drainer := appProxy.NewDrainHandler(rootHandler)
 	http2Server := &http2.Server{}
 	handler := h2c.NewHandler(drainer, http2Server)
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	if e := http2.ConfigureServer(server, http2Server); e != nil {
-		return fmt.Errorf("configure HTTP/2 server: %w", e)
+		return false, fmt.Errorf("configure HTTP/2 server: %w", e)
 	}
 	connections := appProxy.NewConnectionTracker()
 	tcpServers := make([]*appProxy.TCPServer, 0)
@@ -299,15 +315,15 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 	}()
 	if e := hooks.StartUp(signals); e != nil {
 		if signals.Err() != nil {
-			return nil
+			return false, nil
 		}
-		return e
+		return false, e
 	}
 	tasks.Start(context.Background())
 	defer tasks.Stop()
 	listeners, e := listenLoopbacks(cfg.Port)
 	if e != nil {
-		return e
+		return false, e
 	}
 	errc := make(chan error, len(listeners)+len(tcpServers))
 	for _, listener := range listeners {
@@ -352,6 +368,7 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 		}()
 	}
 	var serveErr error
+	restart := false
 	select {
 	case serveErr = <-startErrors:
 	case serveErr = <-uiErrors:
@@ -360,6 +377,8 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 			serveErr = e
 		}
 	case <-signals.Done():
+	case <-restartc:
+		restart = true
 	}
 	cancelUI()
 	if stopWebUI != nil {
@@ -393,7 +412,7 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 	if startDone != nil {
 		<-startDone
 	}
-	return errors.Join(serveErr, stopErr)
+	return restart, errors.Join(serveErr, stopErr)
 }
 
 func listenLoopbacks(port int) ([]net.Listener, error) {
