@@ -63,7 +63,7 @@ type Service struct {
 func newService(ctx context.Context, c config.RuntimeAppConfig, r proc.ProcessRunner, l *slog.Logger) *Service {
 	return &Service{id: c.ID, cfg: c, runner: r, logger: l.With("service", c.ID), lifecycle: ctx, state: StateStopped, dependents: map[string]int{}}
 }
-func (s *Service) Config() config.RuntimeAppConfig { return s.cfg }
+func (s *Service) Config() config.RuntimeAppConfig { s.mu.Lock(); defer s.mu.Unlock(); return s.cfg }
 func (s *Service) State() State                    { s.mu.Lock(); defer s.mu.Unlock(); return s.state }
 func (s *Service) commandSpec(command, kind string) proc.CommandSpec {
 	return proc.CommandSpec{Command: command, Dir: s.cfg.Pwd, Service: s.id, Kind: kind, Env: s.cfg.Env}

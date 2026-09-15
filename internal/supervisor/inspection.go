@@ -3,8 +3,12 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"sort"
 	"time"
+
+	"github.com/and1truong/heron/internal/config"
 )
 
 type Snapshot struct {
@@ -59,12 +63,30 @@ func (s *Supervisor) Snapshots() []Snapshot {
 // Action uses the same lifecycle as proxy requests. Manual stop inhibits lazy
 // restarts until Start/Restart, so incoming traffic cannot undo a user's stop.
 func (s *Supervisor) Action(ctx context.Context, id, action string) error {
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
 	if s.closing.Load() {
 		return ErrClosing
 	}
 	v := s.services[id]
 	if v == nil {
-		return errors.New("unknown service")
+		return ErrUnknownService
+	}
+	var replacement *config.RuntimeAppConfig
+	if action == "restart" && s.loadConfig != nil {
+		cfg, err := s.loadConfig()
+		if err != nil {
+			return fmt.Errorf("reload configuration: %w", err)
+		}
+		fresh, ok := cfg.Apps[id]
+		if !ok {
+			return fmt.Errorf("service %q removed from configuration; full restart required", id)
+		}
+		old := v.Config()
+		if !reflect.DeepEqual(old.EndpointList(), fresh.EndpointList()) || !reflect.DeepEqual(old.DependsOn, fresh.DependsOn) {
+			return errors.New("endpoint or dependency changes require a full Heron restart")
+		}
+		replacement = &fresh
 	}
 	switch action {
 	case "stop", "kill", "restart":
@@ -99,6 +121,9 @@ func (s *Supervisor) Action(ctx context.Context, id, action string) error {
 		return errors.New("unknown action")
 	}
 	v.mu.Lock()
+	if replacement != nil {
+		v.cfg = *replacement
+	}
 	v.manualStopped = false
 	v.mu.Unlock()
 	release, err := s.Acquire(ctx, id)
@@ -106,4 +131,12 @@ func (s *Supervisor) Action(ctx context.Context, id, action string) error {
 		release()
 	}
 	return err
+}
+
+var ErrUnknownService = errors.New("unknown service")
+
+// SetConfigLoader must be called before serving requests. Every manual restart
+// validates fresh config before stopping, then installs only the target app.
+func (s *Supervisor) SetConfigLoader(load func() (config.RuntimeConfig, error)) {
+	s.loadConfig = load
 }

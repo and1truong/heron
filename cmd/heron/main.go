@@ -266,6 +266,16 @@ func runSelectedModeOnce(path string, interactive, graphical bool, app string, o
 	hooks := lifecycle.New(cfg.StartUp, cfg.TearDown, runner, logger)
 	tasks := scheduler.New(cfg.ScheduledTasks, runner, logger)
 	sup := supervisor.New(cfg, runner, logger)
+	sup.SetConfigLoader(func() (config.RuntimeConfig, error) {
+		fresh, err := config.Load(path)
+		if err != nil {
+			return fresh, err
+		}
+		if app != "" {
+			return fresh.SelectApp(app)
+		}
+		return fresh, nil
+	})
 	proxyHandler := appProxy.NewHandler(cfg, sup, logger)
 	var ui *webui.Server
 	if graphical {
@@ -276,6 +286,9 @@ func runSelectedModeOnce(path string, interactive, graphical bool, app string, o
 	}
 	restartc := make(chan struct{})
 	controlHandler := control.New(func() { close(restartc) })
+	controlHandler.RestartService = func(ctx context.Context, id string) error {
+		return sup.Action(ctx, id, "restart")
+	}
 	rootHandler := http.Handler(proxyHandler)
 	rootHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if control.HandlesHost(r.Host) {
