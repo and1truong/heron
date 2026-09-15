@@ -3,6 +3,7 @@ package process
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -34,13 +35,40 @@ func (OSTracker) Snapshot(ctx context.Context) ([]Stats, error) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return nil, fmt.Errorf("process metrics unsupported on %s", runtime.GOOS)
 	}
+	if runtime.GOOS == "linux" {
+		// A container may expose the host's /proc inside a different PID
+		// namespace. ps would return host IDs, which must never be compared to
+		// the launch PID: collisions could attribute an unrelated host process.
+		self, err := os.ReadFile("/proc/self/stat")
+		if err != nil {
+			return nil, fmt.Errorf("process metrics: read /proc/self/stat: %w", err)
+		}
+		if err := checkProcPID(string(self), os.Getpid()); err != nil {
+			return nil, err
+		}
+	}
 	cmd := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,pgid=,lstart=,time=,rss=,vsz=,comm=")
 	cmd.Env = mergeEnvironment(cmd.Environ(), map[string]string{"LC_ALL": "C", "TZ": "UTC"})
 	out, err := cmd.Output()
 	if err != nil {
+		if failure, ok := err.(*exec.ExitError); ok && len(failure.Stderr) > 0 {
+			return nil, fmt.Errorf("process metrics: %w: %s", err, strings.TrimSpace(string(failure.Stderr)))
+		}
 		return nil, fmt.Errorf("process metrics: %w", err)
 	}
 	return parsePS(string(out)), nil
+}
+
+func checkProcPID(stat string, pid int) error {
+	first, _, ok := strings.Cut(stat, " ")
+	procPID, err := strconv.Atoi(first)
+	if !ok || err != nil {
+		return fmt.Errorf("process metrics: invalid /proc/self/stat")
+	}
+	if procPID != pid {
+		return fmt.Errorf("process metrics: /proc PID namespace does not match; metrics unavailable")
+	}
+	return nil
 }
 
 func parsePS(text string) []Stats {

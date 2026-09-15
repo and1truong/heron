@@ -12,6 +12,7 @@ import sys
 import tempfile
 import termios
 import time
+from pathlib import Path
 import urllib.error
 import urllib.request
 
@@ -20,6 +21,12 @@ def port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+# A host-mounted /proc cannot safely describe processes in a nested PID
+# namespace. Exercise the explicit unavailable state there; still require a
+# real process tree on normal Linux/macOS hosts, and continue all lifecycle tests.
+foreign_proc = sys.platform == "linux" and int(Path("/proc/self/stat").read_text().split(" ", 1)[0]) != os.getpid()
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -96,7 +103,11 @@ apps:
         key("l3")
         until(b"GET /")
         key("3p2\r")
-        until(b" PPID ")
+        if foreign_proc:
+            until(b"/proc PID namespace does not match")
+            until(b"CPU/RSS: unavailable")
+        else:
+            until(b" PPID ")
         key("2x")
         until(b"[stopped]")
         try:
@@ -134,7 +145,8 @@ apps:
             raise AssertionError("app survived TUI shutdown")
         except ConnectionRefusedError:
             pass
-        print("PTY smoke passed: plain mode, TUI, logs, tree, stop/start/restart/kill, quit, terminal restoration")
+        metrics = "explicit unavailable metrics (foreign /proc)" if foreign_proc else "process tree"
+        print(f"PTY smoke passed: plain mode, TUI, logs, {metrics}, stop/start/restart/kill, quit, terminal restoration")
     finally:
         if child.poll() is None:
             child.send_signal(signal.SIGTERM)

@@ -27,14 +27,24 @@ func TestInterruptWithOpenProxiedConnectionStopsApp(t *testing.T) {
 	proxyPort := unusedPort(t)
 	upstreamPort := unusedPort(t)
 	scriptPath := filepath.Join(dir, "stream_server.py")
-	script := fmt.Sprintf(`import socket, time
+	stopMarker := filepath.Join(dir, "app-stopped")
+	script := fmt.Sprintf(`import socket, time, signal
+def stop(signum, frame):
+    s.close()
+    with open(%q, "w") as marker:
+        marker.write("stopped")
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", %d))
 s.listen(8)
 while True:
     c, _ = s.accept()
-    c.recv(65536)
+    request = c.recv(65536)
+    if request == b"QUIT":
+        c.close()
+        break
     try:
         c.sendall(b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n")
         while True:
@@ -42,11 +52,18 @@ while True:
             time.sleep(0.2)
     except OSError:
         pass
-`, upstreamPort)
+`, stopMarker, upstreamPort)
 	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = exec.Command("pkill", "-f", scriptPath).Run() })
+	t.Cleanup(func() {
+		// Ask this fixture to exit if a regression left it listening. Avoid
+		// pgrep/pkill: /proc can describe a different PID namespace in containers.
+		if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", upstreamPort), time.Second); err == nil {
+			_, _ = conn.Write([]byte("QUIT"))
+			_ = conn.Close()
+		}
+	})
 
 	configPath := filepath.Join(dir, "heron.yaml")
 	contents := fmt.Sprintf("port: %d\nstopTimeout: 2s\napps:\n  slow:\n    pwd: %s\n    launch: python3 %s\n    port: %d\n", proxyPort, dir, scriptPath, upstreamPort)
@@ -96,10 +113,6 @@ while True:
 		}
 	}
 
-	if appPID(t, scriptPath) == 0 {
-		t.Fatalf("app process not found while serving the proxied stream\n%s", processOutput.String())
-	}
-
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
@@ -112,28 +125,14 @@ while True:
 		t.Fatalf("heron did not stop within 15s of interrupt while a proxied connection was open\n%s", processOutput.String())
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for appPID(t, scriptPath) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("app process survived heron shutdown\n%s", processOutput.String())
-		}
-		time.Sleep(100 * time.Millisecond)
+	// The fixture itself must acknowledge SIGTERM, and its listening socket
+	// must close. Global command-line matching can select stale host-namespace
+	// PIDs and previously reported a live app even after successful shutdown.
+	if _, err := os.Stat(stopMarker); err != nil {
+		t.Fatalf("app did not acknowledge graceful shutdown: %v\n%s", err, processOutput.String())
 	}
-}
-
-func appPID(t *testing.T, pattern string) int {
-	t.Helper()
-	output, err := exec.Command("pgrep", "-f", pattern).Output()
-	if err != nil {
-		return 0
+	if probe, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", upstreamPort), time.Second); err == nil {
+		_ = probe.Close()
+		t.Fatalf("app listener survived Heron shutdown\n%s", processOutput.String())
 	}
-	fields := strings.Fields(string(output))
-	if len(fields) == 0 {
-		return 0
-	}
-	var pid int
-	if _, err := fmt.Sscanf(fields[0], "%d", &pid); err != nil {
-		return 0
-	}
-	return pid
 }

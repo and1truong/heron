@@ -801,7 +801,10 @@ Processes that create new sessions/groups, containers, and external daemons
 cannot be inferred reliably; their metrics are unavailable rather than reported
 as zero. The process tree preserves PID/start-time selection across refreshes;
 large trees initially collapse. Collection failures leave lifecycle controls
-available. Terminal control characters in app names/log output are sanitized.
+available. Linux also checks that `/proc` matches Heron's PID namespace before
+collecting metrics; a host-mounted `/proc` in a nested container reports metrics
+unavailable instead of attributing unrelated host processes to an app. Terminal
+control characters in app names/log output are sanitized.
 
 
 ## App dependencies
