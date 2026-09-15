@@ -131,9 +131,10 @@ func (a RuntimeAppConfig) EndpointList() []RuntimeEndpointConfig {
 }
 
 const (
-	ProtocolHTTP = "http"
-	ProtocolGRPC = "grpc"
-	ProtocolTCP  = "tcp"
+	ProtocolHTTP            = "http"
+	ProtocolGRPC            = "grpc"
+	ProtocolTCP             = "tcp"
+	ReservedControlHostname = "heron.localhost"
 )
 
 func DefaultPath() (string, error) {
@@ -588,6 +589,9 @@ func normalizeEndpoint(appID, name string, endpoint EndpointConfig, count, wrapp
 			host, err = normalizeHost(host)
 			if err != nil {
 				return RuntimeEndpointConfig{}, fmt.Errorf("app %q endpoint %q: host: %w", appID, name, err)
+			}
+			if host == ReservedControlHostname {
+				return RuntimeEndpointConfig{}, fmt.Errorf("app %q endpoint %q: host %q is reserved by heron control API", appID, name, host)
 			}
 			if err := registerHost(host); err != nil {
 				return RuntimeEndpointConfig{}, err
