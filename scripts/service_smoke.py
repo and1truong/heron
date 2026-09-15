@@ -103,7 +103,30 @@ with tempfile.TemporaryDirectory(prefix="heron service ") as directory:
             process.send_signal(signal.SIGTERM)
             process.wait(timeout=15)
 
+    # SIGTERM during an HTTP restart's teardown must terminate the whole
+    # worker, not disappear when the next runtime installs its signal handler.
+    config["tearDown"] = ["echo restarting > restart-teardown; sleep 1"]
+    cfg.write_text(json.dumps(config))
+    spec["Token"] = "restart-stop-generation"
+    specpath.write_text(json.dumps(spec))
+    process = launch()
+    try:
+        wait_for(lambda: state().get("Token") == spec["Token"] and state().get("State") == "running")
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/_heron/restart", data=b"",
+            headers={"Host": f"heron.localhost:{port}", "X-Heron-Command": "restart"})
+        with opener.open(request, timeout=5) as response:
+            assert response.status == 202
+        wait_for(lambda: (root / "restart-teardown").exists())
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=10) == 0, "SIGTERM was lost during runtime restart"
+        assert state()["State"] == "stopped", state()
+    finally:
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+            process.wait(timeout=15)
+
     # Startup hook failures must never publish readiness.
+    config["tearDown"] = []
     config["startUp"] = ["exit 7"]
     cfg.write_text(json.dumps(config))
     spec["Token"] = "failed-generation"
@@ -112,4 +135,4 @@ with tempfile.TemporaryDirectory(prefix="heron service ") as directory:
     assert process.wait(timeout=15) != 0
     assert state()["State"] == "failed" and state()["Token"] == "failed-generation", state()
     assert state()["Error"], state()
-    print("Service smoke passed: detached worker, automatic UI, readiness, lazy apps, saved cwd/env, persistent logs, dependency shutdown, missing config, startup failure")
+    print("Service smoke passed: detached worker, automatic UI, readiness, lazy apps, saved cwd/env, persistent logs, dependency shutdown, missing config, SIGTERM during restart, startup failure")

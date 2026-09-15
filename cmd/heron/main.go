@@ -243,13 +243,20 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 }
 
 func runModeWithLifecycle(path string, interactive, graphical bool, app string, output io.Writer, notifications *runtimeLifecycle) error {
+	// Termination applies to the whole worker lifetime, including teardown and
+	// gaps between HTTP-requested runtime restarts.
+	signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	for {
+		if signals.Err() != nil {
+			return nil
+		}
 		if notifications != nil {
 			if err := notifications.starting(); err != nil {
 				return err
 			}
 		}
-		restart, err := runModeOnce(path, interactive, graphical, app, output, notifications)
+		restart, err := runModeOnce(path, interactive, graphical, app, output, notifications, signals)
 		if err != nil || !restart {
 			return err
 		}
@@ -257,10 +264,12 @@ func runModeWithLifecycle(path string, interactive, graphical bool, app string, 
 }
 
 func runSelectedModeOnce(path string, interactive, graphical bool, app string, output io.Writer) (bool, error) {
-	return runModeOnce(path, interactive, graphical, app, output, nil)
+	signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runModeOnce(path, interactive, graphical, app, output, nil, signals)
 }
 
-func runModeOnce(path string, interactive, graphical bool, app string, output io.Writer, notifications *runtimeLifecycle) (resultRestart bool, resultErr error) {
+func runModeOnce(path string, interactive, graphical bool, app string, output io.Writer, notifications *runtimeLifecycle, signals context.Context) (resultRestart bool, resultErr error) {
 	cfg, e := config.Load(path)
 	if e != nil {
 		return false, fmt.Errorf("load configuration: %w", e)
@@ -355,8 +364,6 @@ func runModeOnce(path string, interactive, graphical bool, app string, output io
 			}
 		}
 	}
-	signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), cfg.StopTimeout+30*time.Second)
 		defer cancel()
