@@ -147,6 +147,70 @@ Without `-c`, `heron` uses:
 ~/.config/heron.yaml
 ```
 
+### Background service
+
+```sh
+heron start                       # background supervisor; web UI enabled
+heron status                      # state, PID, uptime, config, UI URL, log path
+heron restart                     # validate, stop completely, reload, start
+heron stop                        # graceful shutdown, including managed apps
+
+heron start -c ./config.yaml
+heron stop -c ./config.yaml --timeout 5m
+heron help start
+```
+
+Service mode uses the current user's **launchd login session on macOS** or
+**systemd user manager on Linux (systemd 243+)**. It requires neither sudo nor an
+attached terminal. Linux needs a working user session/bus; containers without
+systemd and other platforms report an error. Foreground commands remain available.
+
+`start` registers and starts the service, waits for all proxy listeners and the
+web UI to become ready, then prints `http://ui.heron.localhost:<configured-port>`.
+The UI is always enabled in service mode; no separate `heron ui` is needed. Open
+that URL in a browser. Apps remain lazy until traffic or a UI Start action. Closing
+the terminal or browser does not stop Heron. The service is **not enabled at login
+or boot**, and is not automatically restarted after a crash. User logout behavior
+follows the OS user service manager.
+
+Commands select an instance using the config's absolute path (default
+`~/.config/heron.yaml`). Use the same `-c` selection each time. Directory symlinks
+are resolved; a symlink used as the config filename is a separate selection, so
+keep using that symlink path. Conflicting listener ports are rejected. Repeated
+or concurrent starts of the same selection cannot create duplicate instances.
+
+`start` captures the invoking shell's environment and working directory, including
+PATH, for consistent hooks and app commands. `restart` retains that snapshot and
+reloads config from disk; use `stop` then `start` to capture a new environment or
+working directory. The launch spec is stored with owner-only permissions because
+it contains environment values. Run from an installed binary at a stable path.
+
+`stop` and `status` do not load YAML, so they still work when the configuration is
+invalid or removed. Restart validates the new config, using the saved launch
+environment, before stopping the old process. Stop waits for dependent-first app
+shutdown and teardown hooks. A timeout reports the unfinished operation and never
+force-kills apps or launches a competing replacement. The default command timeout
+is two minutes; override with `--timeout`. Failed starts request cleanup with a
+separate five-second budget; inspect status if cleanup is still in progress.
+
+Status exit codes are **0** for running, **3** for stopped, and **1** for
+starting/stopping/failed or an error. Readiness records are checked against the OS
+manager's live PID and a per-launch token; a PID file alone is never treated as
+proof of a running service or used to kill a process.
+
+`heron status` prints the service log location under
+`~/.local/state/heron/heron-<config-id>/service.log`. It includes runtime diagnostics
+and app output alongside the UI's bounded in-memory logs. This file is append-only
+and has no automatic rotation; stop Heron before archiving/truncating it. Very
+early launch errors are also available in `journalctl --user -u heron-<config-id>`
+on Linux, or the same log file on macOS. Native service definitions and runtime
+state live beside the log. No boot/login enablement or global service is installed.
+
+For verification, `scripts/service_smoke.py` tests the detached worker and UI on
+both Unix platforms. `scripts/service_native_smoke.py` exercises the actual four
+CLI commands when the corresponding user service manager is available, otherwise
+it reports an explicit skip.
+
 ## Configuration
 
 ```yaml
@@ -737,7 +801,10 @@ Processes that create new sessions/groups, containers, and external daemons
 cannot be inferred reliably; their metrics are unavailable rather than reported
 as zero. The process tree preserves PID/start-time selection across refreshes;
 large trees initially collapse. Collection failures leave lifecycle controls
-available. Terminal control characters in app names/log output are sanitized.
+available. Linux also checks that `/proc` matches Heron's PID namespace before
+collecting metrics; a host-mounted `/proc` in a nested container reports metrics
+unavailable instead of attributing unrelated host processes to an app. Terminal
+control characters in app names/log output are sanitized.
 
 
 ## App dependencies

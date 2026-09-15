@@ -49,3 +49,15 @@ func TestCPUTimeFormats(t *testing.T) {
 		}
 	}
 }
+
+func TestProcNamespaceMismatchCannotAttributeHostProcesses(t *testing.T) {
+	if err := checkProcPID("42 (heron) R 1 42 42", 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkProcPID("10042 (heron) R 1 10042 10042", 42); err == nil {
+		t.Fatal("accepted host PIDs in a nested PID namespace")
+	}
+	if err := checkProcPID("malformed", 42); err == nil {
+		t.Fatal("accepted malformed process identity")
+	}
+}
