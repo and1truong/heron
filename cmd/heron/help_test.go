@@ -13,6 +13,10 @@ func TestHelpDoesNotLoadConfiguration(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
 	for _, args := range [][]string{
 		{"help"}, {"-h"}, {"--help"}, {"-c", missing, "--help"},
+		{"help", "start"}, {"start", "-h"}, {"start", "-c", missing, "--help"},
+		{"help", "stop"}, {"stop", "--help"},
+		{"help", "restart"}, {"restart", "--help"},
+		{"help", "status"}, {"status", "--help"},
 		{"help", "doctor"}, {"doctor", "-h"}, {"doctor", "--help"},
 		{"doctor", "-c", missing, "--help"},
 		{"help", "ui"}, {"ui", "-h"}, {"ui", "-c", missing, "--help"},
@@ -38,6 +42,10 @@ func TestHelpAliasesMatch(t *testing.T) {
 		{{"help", "doctor"}, {"doctor", "--help"}},
 		{{"help", "tui"}, {"tui", "--help"}},
 		{{"help", "ui"}, {"ui", "--help"}},
+		{{"help", "start"}, {"start", "--help"}},
+		{{"help", "stop"}, {"stop", "--help"}},
+		{{"help", "restart"}, {"restart", "--help"}},
+		{{"help", "status"}, {"status", "--help"}},
 	} {
 		var first, second bytes.Buffer
 		if err := runArgs(pair[0], &first); err != nil {

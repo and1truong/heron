@@ -32,6 +32,10 @@ import (
 
 func main() {
 	if e := run(); e != nil {
+		var status exitError
+		if errors.As(e, &status) {
+			os.Exit(status.code)
+		}
 		fmt.Fprintln(os.Stderr, e)
 		os.Exit(1)
 	}
@@ -42,15 +46,21 @@ func run() error {
 }
 
 func runArgs(args []string, output io.Writer) error {
+	if len(args) > 0 && (args[0] == "__service-run" || args[0] == "__service-validate") {
+		return runServiceWorker(args[0], args[1:])
+	}
 	if len(args) > 0 && args[0] == "help" {
 		switch {
 		case len(args) == 1:
 			args = []string{"-h"}
-		case len(args) == 2 && (args[1] == "doctor" || args[1] == "tui" || args[1] == "ui"):
+		case len(args) == 2 && (args[1] == "doctor" || args[1] == "tui" || args[1] == "ui" || isServiceCommand(args[1])):
 			args = []string{args[1], "-h"}
 		default:
 			return fmt.Errorf("help: unknown topic or unexpected arguments: %v (use heron help)", args[1:])
 		}
+	}
+	if len(args) > 0 && isServiceCommand(args[0]) {
+		return runServiceArgs(args[0], args[1:], output)
 	}
 	if len(args) > 0 && args[0] == "doctor" {
 		return runDoctorArgs("", args[1:], output)
@@ -71,8 +81,10 @@ func runArgs(args []string, output io.Writer) error {
 		fmt.Fprintln(output, "       heron tui [-c FILE] [--app NAME]")
 		fmt.Fprintln(output, "       heron ui [-c FILE] [--app NAME]")
 		fmt.Fprintln(output, "       heron doctor [-c FILE]")
-		fmt.Fprintln(output, "       heron help [doctor|tui|ui]")
+		fmt.Fprintln(output, "       heron help [doctor|tui|ui|start|stop|restart|status]")
+		fmt.Fprintln(output, "       heron start|stop|restart|status [-c FILE] [--timeout 2m]")
 		fmt.Fprintln(output, "\nCommands:")
+		fmt.Fprintln(output, "  start/stop/restart/status  Manage background service with automatic web UI")
 		fmt.Fprintln(output, "  ui      Start proxy with local graphical app manager")
 		fmt.Fprintln(output, "  tui     Start proxy with interactive app, process, log and event panes")
 		fmt.Fprintln(output, "  doctor  Validate configuration without running hooks or app commands")
@@ -219,9 +231,25 @@ func runServerMode(path string, interactive bool) error {
 func runSelectedServerMode(path string, interactive bool, app string) error {
 	return runSelectedMode(path, interactive, false, app, os.Stdout)
 }
+
+type runtimeLifecycle struct {
+	starting func() error
+	ready    func(string) error
+	stopping func()
+}
+
 func runSelectedMode(path string, interactive, graphical bool, app string, output io.Writer) error {
+	return runModeWithLifecycle(path, interactive, graphical, app, output, nil)
+}
+
+func runModeWithLifecycle(path string, interactive, graphical bool, app string, output io.Writer, notifications *runtimeLifecycle) error {
 	for {
-		restart, err := runSelectedModeOnce(path, interactive, graphical, app, output)
+		if notifications != nil {
+			if err := notifications.starting(); err != nil {
+				return err
+			}
+		}
+		restart, err := runModeOnce(path, interactive, graphical, app, output, notifications)
 		if err != nil || !restart {
 			return err
 		}
@@ -229,6 +257,10 @@ func runSelectedMode(path string, interactive, graphical bool, app string, outpu
 }
 
 func runSelectedModeOnce(path string, interactive, graphical bool, app string, output io.Writer) (bool, error) {
+	return runModeOnce(path, interactive, graphical, app, output, nil)
+}
+
+func runModeOnce(path string, interactive, graphical bool, app string, output io.Writer, notifications *runtimeLifecycle) (resultRestart bool, resultErr error) {
 	cfg, e := config.Load(path)
 	if e != nil {
 		return false, fmt.Errorf("load configuration: %w", e)
@@ -257,7 +289,11 @@ func runSelectedModeOnce(path string, interactive, graphical bool, app string, o
 	var observations *observe.Store
 	if interactive || graphical {
 		observations = observe.New()
-		logger = slog.New(&observe.Handler{Store: observations, Level: level})
+		handler := slog.Handler(&observe.Handler{Store: observations, Level: level})
+		if notifications != nil {
+			handler = dualHandler{handler, logger.Handler()}
+		}
+		logger = slog.New(handler)
 	}
 	if e := preflightRequiredPorts(context.Background(), cfg, logger); e != nil {
 		return false, e
@@ -324,7 +360,9 @@ func runSelectedModeOnce(path string, interactive, graphical bool, app string, o
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), cfg.StopTimeout+30*time.Second)
 		defer cancel()
-		_ = hooks.TearDown(cleanupCtx)
+		if err := hooks.TearDown(cleanupCtx); notifications != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
 	}()
 	if e := hooks.StartUp(signals); e != nil {
 		if signals.Err() != nil {
@@ -338,6 +376,24 @@ func runSelectedModeOnce(path string, interactive, graphical bool, app string, o
 	if e != nil {
 		return false, e
 	}
+	defer func() {
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}()
+	tcpListeners := make([]net.Listener, 0, len(tcpServers))
+	defer func() {
+		for _, listener := range tcpListeners {
+			_ = listener.Close()
+		}
+	}()
+	for _, tcpServer := range tcpServers {
+		listener, err := net.Listen("tcp", tcpServer.Addr())
+		if err != nil {
+			return false, err
+		}
+		tcpListeners = append(tcpListeners, listener)
+	}
 	errc := make(chan error, len(listeners)+len(tcpServers))
 	for _, listener := range listeners {
 		go func(listener net.Listener) {
@@ -345,8 +401,8 @@ func runSelectedModeOnce(path string, interactive, graphical bool, app string, o
 			errc <- server.Serve(connections.Track(listener))
 		}(listener)
 	}
-	for _, tcpServer := range tcpServers {
-		go func(s *appProxy.TCPServer) { errc <- s.ListenAndServe() }(tcpServer)
+	for index, tcpServer := range tcpServers {
+		go func(s *appProxy.TCPServer, listener net.Listener) { errc <- s.Serve(listener) }(tcpServer, tcpListeners[index])
 	}
 	uiCtx, cancelUI := context.WithCancel(signals)
 	defer cancelUI()
@@ -382,16 +438,30 @@ func runSelectedModeOnce(path string, interactive, graphical bool, app string, o
 	}
 	var serveErr error
 	restart := false
-	select {
-	case serveErr = <-startErrors:
-	case serveErr = <-uiErrors:
-	case e := <-errc:
-		if !errors.Is(e, http.ErrServerClosed) && !errors.Is(e, appProxy.ErrTCPServerClosed) {
-			serveErr = e
+	if notifications != nil {
+		// Probe the actual HTTP/UI path before publishing readiness. All TCP
+		// listeners have already been bound, so asynchronous bind failures cannot
+		// result in a false successful service start.
+		serveErr = checkUIReady(signals, cfg.Port)
+		if serveErr == nil {
+			serveErr = notifications.ready(ui.URL())
 		}
-	case <-signals.Done():
-	case <-restartc:
-		restart = true
+	}
+	if serveErr == nil {
+		select {
+		case serveErr = <-startErrors:
+		case serveErr = <-uiErrors:
+		case e := <-errc:
+			if !errors.Is(e, http.ErrServerClosed) && !errors.Is(e, appProxy.ErrTCPServerClosed) {
+				serveErr = e
+			}
+		case <-signals.Done():
+		case <-restartc:
+			restart = true
+		}
+	}
+	if notifications != nil {
+		notifications.stopping()
 	}
 	cancelUI()
 	if stopWebUI != nil {
