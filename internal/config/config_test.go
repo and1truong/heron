@@ -430,6 +430,16 @@ func TestNormalizeRejectsDuplicateHosts(t *testing.T) {
 	}
 }
 
+func TestNormalizeRejectsReservedControlHostname(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{Apps: map[string]AppConfig{
+		"api": {Pwd: dir, Launch: "server", Host: "HERON.LOCALHOST", Port: 1980},
+	}}
+	if _, err := c.Normalize(); err == nil || !strings.Contains(err.Error(), "reserved by heron control API") {
+		t.Fatalf("error = %v, want reserved control host", err)
+	}
+}
+
 func TestNormalizeIdleOverride(t *testing.T) {
 	c := baseConfig(t.TempDir())
 	c.Idle = Duration{Duration: time.Hour}
