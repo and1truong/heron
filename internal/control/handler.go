@@ -2,10 +2,15 @@
 package control
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/and1truong/heron/internal/supervisor"
 )
 
 const (
@@ -15,8 +20,9 @@ const (
 )
 
 type Handler struct {
-	restart func()
-	once    sync.Once
+	RestartService func(context.Context, string) error
+	restart        func()
+	once           sync.Once
 }
 
 func New(restart func()) *Handler { return &Handler{restart: restart} }
@@ -35,7 +41,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid host", http.StatusForbidden)
 		return
 	}
-	if r.URL.Path != RestartPath {
+	serviceID := ""
+	if strings.HasPrefix(r.URL.Path, "/_heron/services/") && strings.HasSuffix(r.URL.Path, "/restart") {
+		serviceID = strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/_heron/services/"), "/restart")
+	}
+	if r.URL.Path != RestartPath && (serviceID == "" || strings.Contains(serviceID, "/") || h.RestartService == nil) {
 		http.NotFound(w, r)
 		return
 	}
@@ -46,6 +56,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Header.Get(commandHeader) != "restart" {
 		http.Error(w, "invalid command", http.StatusForbidden)
+		return
+	}
+	if serviceID != "" {
+		if err := h.RestartService(r.Context(), serviceID); err != nil {
+			status := http.StatusConflict
+			if errors.Is(err, supervisor.ErrUnknownService) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"service": serviceID, "restarted": true})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

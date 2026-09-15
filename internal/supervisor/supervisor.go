@@ -6,15 +6,18 @@ import (
 	"github.com/and1truong/heron/internal/config"
 	proc "github.com/and1truong/heron/internal/process"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 )
 
 type Supervisor struct {
-	services map[string]*Service
-	logger   *slog.Logger
-	closing  atomic.Bool
-	cancel   context.CancelFunc
-	order    []string
+	actionMu   sync.Mutex
+	loadConfig func() (config.RuntimeConfig, error)
+	services   map[string]*Service
+	logger     *slog.Logger
+	closing    atomic.Bool
+	cancel     context.CancelFunc
+	order      []string
 }
 
 func New(c config.RuntimeConfig, r proc.ProcessRunner, l *slog.Logger) *Supervisor {
@@ -53,6 +56,9 @@ func (s *Supervisor) StopAll(ctx context.Context) error {
 		}
 		v.mu.Unlock()
 	}
+	// Cancel in-flight startup before waiting for a manual action to finish.
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
 	var errs []error
 	for i := len(s.order) - 1; i >= 0; i-- {
 		if err := s.services[s.order[i]].Stop(ctx); err != nil {

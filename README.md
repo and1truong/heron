@@ -94,6 +94,25 @@ The loopback-only endpoint returns `202 Accepted`, deduplicates concurrent
 requests, stops all apps and runtime components, then starts them again using
 the current configuration. Replace `3000` with the configured Heron port.
 
+Restart one app with freshly loaded configuration (including included YAML and
+environment files):
+
+```bash
+curl -X POST \
+  -H 'X-Heron-Command: restart' \
+  http://heron.localhost:3000/_heron/services/api/restart
+```
+
+Replace `api` with the app ID. Returns `200 OK` after readiness succeeds,
+`404` for an unknown app, or `409` if reload/restart fails. Configuration is
+validated before stopping; invalid config leaves the running app untouched.
+The old stop command stops the existing process, then the new build, launch,
+environment, working directory, idle and lifecycle timeouts apply. Other apps
+keep their current configuration. UI and TUI manual restarts also reload.
+Endpoint/dependency changes and removed apps require the full restart endpoint;
+these are rejected before stopping. Global settings apply only on full restart.
+Existing active-dependent protection remains in effect.
+
 ### Commands
 
 Show available commands, options, and examples:
